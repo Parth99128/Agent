@@ -1,0 +1,30 @@
+Metadata-Version: 2.4
+Name: oai-network
+Version: 0.1.0
+Summary: Open phonebook + rulebook + trust system for AI agents — discovery, identity, and delegation over MCP & A2A
+Author: OAI-Network Contributors
+License: MIT
+Project-URL: Homepage, https://github.com/Parth99128/Agent
+Project-URL: Repository, https://github.com/Parth99128/Agent
+Keywords: ai,agents,mcp,a2a,discovery,trust,orchestration
+Classifier: Development Status :: 2 - Pre-Alpha
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Software Development :: Libraries :: Python Modules
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: click>=8.1
+Requires-Dist: pydantic>=2.0
+Requires-Dist: jsonschema>=4.20
+Requires-Dist: cryptography>=42.0
+Requires-Dist: rich>=13.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.0; extra == "dev"
+Requires-Dist: ruff>=0.4; extra == "dev"
+
+# Agent
