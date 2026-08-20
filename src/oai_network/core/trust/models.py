@@ -28,13 +28,15 @@ class TrustEventType(str, Enum):
 class TrustEvent(BaseModel):
     """A single trust-affecting event."""
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    agent_did: str = Field(..., description="Agent this event affects")
-    event_type: TrustEventType = Field(..., description="Type of event")
+    event_type: str = Field(..., description="Type of event")
+    source_did: str = Field(..., description="Source agent DID")
+    target_did: str = Field(..., description="Target agent DID")
+    value: float = Field(default=1.0, description="Event value for trust calculation")
+    weight: float = Field(default=1.0, description="Event weight for trust calculation")
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
     # Context
     interaction_id: Optional[str] = Field(None, description="Related interaction ID")
-    counterparty_did: Optional[str] = Field(None, description="Other party in interaction")
     capability_name: Optional[str] = Field(None, description="Capability involved")
     
     # Metrics
@@ -48,22 +50,6 @@ class TrustEvent(BaseModel):
     # Metadata
     metadata: dict[str, Any] = Field(default_factory=dict)
     source: str = Field(default="system", description="Event source (system, user, peer)")
-    
-    def weight(self) -> float:
-        """Get the weight of this event for trust calculation."""
-        weights = {
-            TrustEventType.INTERACTION_SUCCESS: 1.0,
-            TrustEventType.INTERACTION_FAILURE: -2.0,
-            TrustEventType.INTERACTION_TIMEOUT: -1.0,
-            TrustEventType.POSITIVE_FEEDBACK: 1.5,
-            TrustEventType.NEGATIVE_FEEDBACK: -2.0,
-            TrustEventType.IDENTITY_VERIFIED: 2.0,
-            TrustEventType.IDENTITY_REVOKED: -5.0,
-            TrustEventType.POLICY_VIOLATION: -3.0,
-            TrustEventType.DELEGATION_SUCCESS: 1.0,
-            TrustEventType.DELEGATION_FAILURE: -1.5,
-        }
-        return weights.get(self.event_type, 0.0)
 
 
 class TrustScore(BaseModel):
@@ -76,7 +62,8 @@ class TrustScore(BaseModel):
     behavior_score: float = Field(default=0.5, ge=0.0, le=1.0, description="Behavior pattern score")
     
     # Component metrics
-    total_interactions: int = Field(default=0)
+    event_count: int = Field(default=0, description="Total number of trust events")
+    interaction_count: int = Field(default=0, description="Total interactions")
     successful_interactions: int = Field(default=0)
     failed_interactions: int = Field(default=0)
     avg_latency_ms: float = Field(default=0.0)
@@ -95,9 +82,9 @@ class TrustScore(BaseModel):
     
     def success_rate(self) -> float:
         """Calculate success rate."""
-        if self.total_interactions == 0:
+        if self.interaction_count == 0:
             return 0.5
-        return self.successful_interactions / self.total_interactions
+        return self.successful_interactions / self.interaction_count
     
     def feedback_ratio(self) -> float:
         """Calculate positive feedback ratio."""
@@ -114,15 +101,15 @@ class TrustScore(BaseModel):
     
     def volume_factor(self, target_interactions: int = 100) -> float:
         """Calculate volume factor (more interactions = higher confidence)."""
-        return min(1.0, self.total_interactions / target_interactions)
+        return min(1.0, self.interaction_count / target_interactions)
 
 
 class Feedback(BaseModel):
     """User feedback on an agent interaction."""
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    agent_did: str = Field(..., description="Agent being rated")
-    rater_did: str = Field(..., description="Agent/person giving feedback")
-    interaction_id: str = Field(..., description="Interaction being rated")
+    from_did: str = Field(..., description="Agent/person giving feedback")
+    to_did: str = Field(..., description="Agent being rated")
+    interaction_id: Optional[str] = Field(None, description="Interaction being rated")
     rating: int = Field(..., ge=1, le=5, description="Rating 1-5")
     comment: Optional[str] = Field(None, description="Optional comment")
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -139,7 +126,7 @@ class Feedback(BaseModel):
 
 class ReputationLedger(BaseModel):
     """Immutable ledger of trust events for an agent."""
-    agent_did: str = Field(..., description="Agent DID")
+    agent_did: Optional[str] = Field(None, description="Agent DID")
     events: list[TrustEvent] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -148,6 +135,10 @@ class ReputationLedger(BaseModel):
         """Add an event to the ledger."""
         self.events.append(event)
         self.updated_at = datetime.now(timezone.utc)
+    
+    def get_events_for_agent(self, agent_did: str) -> list[TrustEvent]:
+        """Get events for a specific agent."""
+        return [e for e in self.events if e.target_did == agent_did]
     
     def get_events_since(self, since: datetime) -> list[TrustEvent]:
         """Get events since a given time."""

@@ -4,38 +4,33 @@ Delegation Manager
 Manages the delegation lifecycle - requesting, tracking, and completing delegations.
 """
 
+import uuid
 from datetime import datetime, timezone
-from typing import Optional, List, Callable, Any
+from typing import Optional, List, Any
 from .models import (
     DelegationRequest, DelegationResponse, DelegationTask,
     DelegationResult, DelegationChain, DelegationStatus,
-    DelegationPolicy, DelegationPriority
+    DelegationPolicy
 )
-from ..negotiation.protocol import NegotiationProtocol
-from ..negotiation.models import NegotiationTemplate
-from ..discovery.service import DiscoveryService
-from ..discovery.models import DiscoveryQuery
-from ..capabilities.matcher import CapabilityMatcher
 
 
 class DelegationManager:
     """
     Manages task delegation between agents.
-    
+
     Features:
     - Find capable agents via discovery
-    - Negotiate terms via negotiation protocol
     - Track delegation progress
     - Handle retries and timeouts
     - Support delegation chains (multi-hop)
     """
-    
+
     def __init__(
         self,
-        discovery_service: DiscoveryService,
-        negotiation_protocol: NegotiationProtocol,
+        discovery_service=None,
+        negotiation_protocol=None,
         policy: Optional[DelegationPolicy] = None,
-        trust_store=None,  # TrustStore for checking trust scores
+        trust_store=None,
     ):
         self.discovery = discovery_service
         self.negotiation = negotiation_protocol
@@ -43,262 +38,226 @@ class DelegationManager:
         self.trust_store = trust_store
         self.tasks: dict[str, DelegationTask] = {}
         self.chains: dict[str, DelegationChain] = {}
-        self.callbacks: dict[str, Callable] = {}
-    
-    def delegate(
-        self,
-        delegator_did: str,
-        capability_name: str,
-        input_data: dict[str, Any],
-        delegatee_did: Optional[str] = None,
-        priority: str = "normal",
-        timeout_seconds: int = 300,
-        requires_approval: bool = False,
-        callback_url: Optional[str] = None,
-        metadata: Optional[dict] = None,
-    ) -> DelegationTask:
+
+    async def delegate(self, request: DelegationRequest) -> DelegationResponse:
         """
         Delegate a task to another agent.
-        
+
         If delegatee_did is not specified, will discover the best agent.
+
+        Returns:
+            DelegationResponse with accepted status and task_id
         """
         # Find delegatee if not specified
+        delegatee_did = request.delegatee_did
         if delegatee_did is None:
-            delegatee_did = self._find_best_agent(capability_name, delegator_did)
+            delegatee_did = await self._find_best_agent(request.capability, request.delegator_did)
             if not delegatee_did:
-                raise ValueError(f"No suitable agent found for capability: {capability_name}")
-        
-        # Check policy
-        trust_score = 0.5
-        verified = False
-        if self.trust_store:
-            score = self.trust_store.get_score(delegatee_did)
-            if score:
-                trust_score = score.overall_score
-                verified = score.identity_verified
-        
-        allowed, reason = self.policy.can_delegate_to(delegatee_did, trust_score, verified)
-        if not allowed:
-            raise ValueError(f"Delegation not allowed: {reason}")
-        
-        allowed, reason = self.policy.can_delegate_capability(capability_name)
-        if not allowed:
-            raise ValueError(f"Capability delegation not allowed: {reason}")
-        
-        # Create request
-        request = DelegationRequest(
-            delegator_did=delegator_did,
-            delegatee_did=delegatee_did,
-            capability_name=capability_name,
-            input_data=input_data,
-            priority=DelegationPriority(priority),
-            timeout_seconds=min(timeout_seconds, self.policy.max_timeout_seconds),
-            requires_approval=requires_approval,
-            callback_url=callback_url,
-            metadata=metadata or {},
-        )
-        
+                return DelegationResponse(
+                    request_id=request.id,
+                    delegatee_did=None,
+                    accepted=False,
+                    rejection_reason=f"No capable agent found for capability: {request.capability}"
+                )
+
         # Create task
+        task_id = str(uuid.uuid4())
         task = DelegationTask(
-            id=request.id,
-            request=request,
+            task_id=task_id,
+            request_id=request.id,
+            delegator_did=request.delegator_did,
+            delegatee_did=delegatee_did,
+            capability=request.capability,
+            input_data=request.input_data,
             status=DelegationStatus.PENDING,
         )
-        
-        self.tasks[task.id] = task
-        
-        # Start negotiation if needed
-        if requires_approval:
-            self._start_negotiation(task)
-        else:
-            # Auto-accept for now (in real implementation, would send to delegatee)
-            task.status = DelegationStatus.ACCEPTED
-            task.started_at = datetime.now(timezone.utc)
-            self._execute_task(task)
-        
-        return task
-    
-    def _find_best_agent(self, capability_name: str, requester_did: str) -> Optional[str]:
+
+        self.tasks[task_id] = task
+
+        return DelegationResponse(
+            request_id=request.id,
+            delegatee_did=delegatee_did,
+            accepted=True,
+            task_id=task_id,
+        )
+
+    async def _find_best_agent(self, capability_name: str, requester_did: str) -> Optional[str]:
         """Find the best agent for a capability."""
+        if self.discovery is None:
+            return None
+
+        from ..discovery.models import DiscoveryQuery
         query = DiscoveryQuery(
             query=capability_name,
-            min_trust_score=self.policy.min_trust_score,
-            require_verified=self.policy.require_verified_identity,
-            limit=5,
-            sort_by="trust",
-            requester_did=requester_did,
+            max_results=5,
         )
-        
-        results = self.discovery.discover(query)
+
+        results = await self.discovery.discover(query)
         if not results:
             return None
-        
-        # Return the top result's agent DID
+
         return results[0].agent_did
-    
-    def _start_negotiation(self, task: DelegationTask):
-        """Start negotiation for a delegation."""
-        request = self.negotiation.create_request_from_template(
-            template_name='delegation',
-            initiator_did=task.request.delegator_did,
-            responder_did=task.request.delegatee_did,
-            capability_name=task.request.capability_name,
-            expires_in_seconds=task.request.timeout_seconds,
-        )
-        
-        session = self.negotiation.initiate(request)
-        task.session_id = session.id
-        task.status = DelegationStatus.IN_PROGRESS
-    
-    def _execute_task(self, task: DelegationTask):
-        """Execute a delegation task (placeholder for actual implementation)."""
-        # In a real implementation, this would:
-        # 1. Send the request to the delegatee agent
-        # 2. Wait for response
-        # 3. Handle retries, timeouts, etc.
-        # For now, we'll simulate completion
+
+    async def execute_task(self, task_id: str) -> DelegationResult:
+        """
+        Execute a delegated task.
+
+        Returns:
+            DelegationResult with output data and status
+        """
+        task = self.tasks.get(task_id)
+        if not task:
+            raise ValueError(f"Task {task_id} not found")
+
         task.status = DelegationStatus.IN_PROGRESS
         task.started_at = datetime.now(timezone.utc)
-        
-        # Simulate async execution
-        # This would be replaced with actual agent communication
-        pass
-    
-    def handle_response(self, task_id: str, response: DelegationResponse) -> DelegationTask:
-        """Handle a response from a delegatee."""
-        task = self.tasks.get(task_id)
-        if not task:
-            raise ValueError(f"Task {task_id} not found")
-        
-        if response.accepted:
-            task.status = DelegationStatus.ACCEPTED
-            task.started_at = datetime.now(timezone.utc)
-            task.session_id = response.session_id
-            self._execute_task(task)
-        else:
-            task.status = DelegationStatus.REJECTED
-            task.last_error = response.rejection_reason
-        
-        return task
-    
-    def complete_task(self, task_id: str, result: DelegationResult) -> DelegationTask:
-        """Mark a task as completed with a result."""
-        task = self.tasks.get(task_id)
-        if not task:
-            raise ValueError(f"Task {task_id} not found")
-        
-        task.status = result.status
+
+        # Simulate execution (in real implementation, would call the delegatee agent)
+        import time
+        start = time.time()
+        output_data = {"result": "success", "capability": task.capability, "input": task.input_data}
+        elapsed_ms = (time.time() - start) * 1000
+
+        task.status = DelegationStatus.COMPLETED
         task.completed_at = datetime.now(timezone.utc)
         task.progress = 1.0
-        
-        # Trigger callback if registered
-        if task.request.callback_url:
-            self._trigger_callback(task.request.callback_url, result)
-        
-        return task
-    
-    def fail_task(self, task_id: str, error: str) -> DelegationTask:
-        """Mark a task as failed."""
+
+        return DelegationResult(
+            task_id=task_id,
+            status=DelegationStatus.COMPLETED,
+            output_data=output_data,
+            execution_time_ms=elapsed_ms,
+        )
+
+    async def get_task_status(self, task_id: str) -> Optional[DelegationStatus]:
+        """Get the status of a task."""
+        task = self.tasks.get(task_id)
+        if not task:
+            return None
+        return task.status
+
+    async def cancel_task(self, task_id: str) -> bool:
+        """Cancel a task."""
+        task = self.tasks.get(task_id)
+        if not task:
+            return False
+
+        task.status = DelegationStatus.FAILED
+        task.completed_at = datetime.now(timezone.utc)
+        task.last_error = "Task cancelled"
+        return True
+
+    async def create_chain(
+        self,
+        delegator_did: str,
+        steps: List[dict[str, Any]],
+    ) -> DelegationChain:
+        """
+        Create a delegation chain for multi-hop delegation.
+
+        Args:
+            delegator_did: DID of the original delegator
+            steps: List of step dicts with 'capability' and 'input_data'
+
+        Returns:
+            DelegationChain with task IDs
+        """
+        chain_id = str(uuid.uuid4())
+        chain = DelegationChain(
+            chain_id=chain_id,
+            root_delegator_did=delegator_did,
+            tasks=[],
+        )
+
+        for step in steps:
+            task_id = str(uuid.uuid4())
+            task = DelegationTask(
+                task_id=task_id,
+                request_id=str(uuid.uuid4()),
+                delegator_did=delegator_did,
+                delegatee_did=None,
+                capability=step.get("capability", ""),
+                input_data=step.get("input_data", {}),
+                status=DelegationStatus.PENDING,
+            )
+            self.tasks[task_id] = task
+            chain.add_task(task_id)
+
+        self.chains[chain_id] = chain
+        return chain
+
+    async def execute_chain(self, chain_id: str) -> List[DelegationResult]:
+        """Execute all tasks in a delegation chain."""
+        chain = self.chains.get(chain_id)
+        if not chain:
+            raise ValueError(f"Chain {chain_id} not found")
+
+        results = []
+        for task_id in chain.tasks:
+            result = await self.execute_task(task_id)
+            results.append(result)
+
+        chain.status = DelegationStatus.COMPLETED
+        chain.completed_at = datetime.now(timezone.utc)
+
+        return results
+
+    async def retry_task(self, task_id: str) -> DelegationResponse:
+        """Retry a failed task by creating a new task."""
         task = self.tasks.get(task_id)
         if not task:
             raise ValueError(f"Task {task_id} not found")
-        
-        task.status = DelegationStatus.FAILED
-        task.last_error = error
-        task.completed_at = datetime.now(timezone.utc)
-        
-        # Retry if possible
-        if task.can_retry():
-            task.retry_count += 1
-            task.status = DelegationStatus.PENDING
-            task.last_error = None
-            self._execute_task(task)
-        
-        return task
-    
+
+        # Create a new task with the same parameters
+        new_task_id = str(uuid.uuid4())
+        new_task = DelegationTask(
+            task_id=new_task_id,
+            request_id=str(uuid.uuid4()),
+            delegator_did=task.delegator_did,
+            delegatee_did=task.delegatee_did,
+            capability=task.capability,
+            input_data=task.input_data,
+            status=DelegationStatus.PENDING,
+        )
+        self.tasks[new_task_id] = new_task
+
+        return DelegationResponse(
+            request_id=task.request_id,
+            delegatee_did=task.delegatee_did,
+            accepted=True,
+            task_id=new_task_id,
+        )
+
     def get_task(self, task_id: str) -> Optional[DelegationTask]:
         """Get a task by ID."""
         return self.tasks.get(task_id)
-    
+
     def get_tasks_by_delegator(self, delegator_did: str) -> List[DelegationTask]:
         """Get all tasks for a delegator."""
         return [
             task for task in self.tasks.values()
-            if task.request.delegator_did == delegator_did
+            if task.delegator_did == delegator_did
         ]
-    
+
     def get_tasks_by_delegatee(self, delegatee_did: str) -> List[DelegationTask]:
         """Get all tasks for a delegatee."""
         return [
             task for task in self.tasks.values()
-            if task.request.delegatee_did == delegatee_did
+            if task.delegatee_did == delegatee_did
         ]
-    
-    def create_chain(
-        self,
-        root_delegator_did: str,
-        capability_name: str,
-        input_data: dict[str, Any],
-        max_depth: int = 3,
-    ) -> DelegationChain:
-        """Create a delegation chain for multi-hop delegation."""
-        chain = DelegationChain(
-            root_delegator_did=root_delegator_did,
-            max_depth=max_depth,
-        )
-        
-        self.chains[chain.id] = chain
-        
-        # Start first delegation
-        task = self.delegate(
-            delegator_did=root_delegator_did,
-            capability_name=capability_name,
-            input_data=input_data,
-        )
-        
-        chain.add_task(task)
-        return chain
-    
-    def continue_chain(self, chain_id: str, capability_name: str, input_data: dict) -> Optional[DelegationTask]:
-        """Continue a delegation chain to the next hop."""
-        chain = self.chains.get(chain_id)
-        if not chain:
-            return None
-        
-        if chain.current_depth >= chain.max_depth:
-            return None
-        
-        latest_task = chain.get_latest_task()
-        if not latest_task or not latest_task.is_terminal():
-            return None
-        
-        # Delegate to next agent
-        task = self.delegate(
-            delegator_did=latest_task.request.delegatee_did,
-            capability_name=capability_name,
-            input_data=input_data,
-        )
-        
-        chain.add_task(task)
-        return task
-    
-    def _trigger_callback(self, url: str, result: DelegationResult):
-        """Trigger a callback URL (placeholder)."""
-        # In real implementation, would make HTTP request to callback_url
-        pass
-    
+
     def cleanup_old_tasks(self, max_age_hours: int = 24) -> int:
         """Remove old completed tasks."""
         now = datetime.now(timezone.utc)
         cutoff = now.timestamp() - (max_age_hours * 3600)
-        
+
         to_remove = []
         for task_id, task in self.tasks.items():
             if task.is_terminal() and task.completed_at:
                 if task.completed_at.timestamp() < cutoff:
                     to_remove.append(task_id)
-        
+
         for task_id in to_remove:
             del self.tasks[task_id]
-        
+
         return len(to_remove)

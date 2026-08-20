@@ -9,13 +9,27 @@ from typing import AsyncGenerator
 from oai_network.core.identity.generator import IdentityGenerator
 from oai_network.core.identity.models import IdentityDocument, AgentIdentity
 from oai_network.core.capabilities.models import AgentManifest, Capability, ServiceEndpoint
-from oai_network.core.discovery.models import DiscoveryQuery
+from oai_network.core.discovery.models import (
+    DiscoveryQuery,
+    DiscoveryResult,
+    RegistryEntry as DiscoveryRegistryEntry,
+)
+from oai_network.core.discovery.service import DiscoveryService
+from oai_network.registry.models import RegistryEntry, HealthStatus
+from oai_network.registry.service import RegistryService
 from oai_network.core.trust.models import TrustScore, TrustEvent
+from oai_network.core.trust.calculator import TrustCalculator
+from oai_network.core.trust.store import TrustStore
 from oai_network.core.negotiation.models import NegotiationSession
-from oai_network.core.delegation.models import DelegationRequest, DelegationTask
-from oai_network.policy.models import Policy, PolicyRule, PolicyEffect, PolicyCondition, Budget, BudgetPeriod
+from oai_network.core.negotiation.protocol import NegotiationProtocol
+from oai_network.core.delegation.models import DelegationRequest, DelegationTask, DelegationStatus, DelegationPriority
+from oai_network.core.delegation.manager import DelegationManager
+from oai_network.core.delegation.policy import DelegationPolicyEngine
+from oai_network.policy.models import Policy, PolicyRule, PolicyEffect, PolicyCondition, Budget, BudgetPeriod, PolicyOperator
 from oai_network.policy.engine import PolicyEngine
+from oai_network.policy.loader import PolicyLoader
 from oai_network.gateway.models import GatewayConfig
+from oai_network.protocols.a2a.models import AgentCard
 
 
 @pytest.fixture
@@ -101,10 +115,57 @@ def sample_discovery_query() -> DiscoveryQuery:
     return DiscoveryQuery(
         query="summarize text",
         capability_type="nlp",
-        min_trust_score=0.5,
-        verified_only=True,
+        min_trust_score=0.0,
+        verified_only=False,
         max_results=10
     )
+
+
+@pytest.fixture
+def sample_discovery_result(sample_agent_identity) -> DiscoveryResult:
+    """Create a sample discovery result."""
+    return DiscoveryResult(
+        agent_did=sample_agent_identity.did,
+        agent_name="Test Agent",
+        agent_description="A test agent for unit testing",
+        capability_name="text_summarization",
+        capability_type="nlp",
+        relevance_score=0.85,
+        trust_score=0.9,
+        endpoint_url="http://localhost:8000/a2a",
+        tags=["nlp", "summarization", "text"],
+        verified=True,
+    )
+
+
+@pytest.fixture
+def sample_registry_entry(sample_manifest) -> RegistryEntry:
+    """Create a sample registry entry."""
+    from datetime import datetime, timezone
+    return RegistryEntry(
+        agent_did=sample_manifest.identity.did,
+        name=sample_manifest.name,
+        description=sample_manifest.description,
+        manifest=sample_manifest,
+        manifest_json=sample_manifest.model_dump_json(),
+        status="active",
+        health_status=HealthStatus.HEALTHY,
+        last_heartbeat=datetime.now(timezone.utc),
+        registered_at=datetime.now(timezone.utc),
+        capabilities=[cap.name for cap in sample_manifest.capabilities],
+    )
+
+
+@pytest.fixture
+def discovery_service() -> DiscoveryService:
+    """Create a discovery service instance."""
+    return DiscoveryService()
+
+
+@pytest.fixture
+def registry_service() -> RegistryService:
+    """Create a registry service instance."""
+    return RegistryService()
 
 
 @pytest.fixture
@@ -135,16 +196,36 @@ def sample_trust_event(sample_agent_identity) -> TrustEvent:
 
 
 @pytest.fixture
+def trust_calculator(trust_store) -> TrustCalculator:
+    """Create a trust calculator."""
+    calculator = TrustCalculator()
+    calculator.set_store(trust_store)
+    return calculator
+
+
+@pytest.fixture
+def trust_store() -> TrustStore:
+    """Create a trust store."""
+    return TrustStore()
+
+
+@pytest.fixture
 def sample_negotiation_session(sample_agent_identity) -> NegotiationSession:
     """Create a sample negotiation session."""
     return NegotiationSession(
-        id="neg-123",
-        initiator_did=sample_agent_identity.did,
-        counterparty_did="did:oai:counterparty",
-        status="active",
-        terms={"price": 0.01, "max_calls": 1000},
-        template="standard"
+        session_id="neg-123",
+        initiator_did="did:oai:initiator",
+        responder_did="did:oai:responder",
+        status="pending",
+        parameters={"price": 0.01, "max_calls": 1000},
+        template_id="standard"
     )
+
+
+@pytest.fixture
+def negotiation_protocol():
+    """Create a negotiation protocol."""
+    return NegotiationProtocol()
 
 
 @pytest.fixture
@@ -153,39 +234,63 @@ def sample_delegation_request(sample_agent_identity, sample_capability) -> Deleg
     return DelegationRequest(
         delegator_did=sample_agent_identity.did,
         delegatee_did="did:oai:delegatee",
-        task=DelegationTask(
-            capability=sample_capability.name,
-            input_data={"text": "Long text to summarize...", "max_length": 50},
-            description="Summarize this text"
-        ),
-        max_depth=3,
-        timeout_seconds=60
+        capability=sample_capability.name,
+        input_data={"text": "Long text to summarize...", "max_length": 50},
+        requirements={"min_trust_score": 0.5},
+        priority=DelegationPriority.NORMAL,
+        timeout_seconds=60,
+        max_retries=3,
     )
+
+
+@pytest.fixture
+def delegation_policy_engine():
+    """Create a delegation policy engine."""
+    return DelegationPolicyEngine()
+
+
+@pytest.fixture
+def delegation_manager(sample_manifest, sample_capability):
+    """Create a delegation manager with a registered agent."""
+    import asyncio
+    from oai_network.core.discovery.service import DiscoveryService
+
+    discovery = DiscoveryService()
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(discovery.register_agent(sample_manifest))
+    finally:
+        loop.close()
+
+    return DelegationManager(discovery_service=discovery)
 
 
 @pytest.fixture
 def sample_policy() -> Policy:
     """Create a sample policy."""
     policy = Policy(
+        policy_id="test-policy",
         name="Test Policy",
         description="Policy for testing",
+        version="1.0.0",
         default_effect=PolicyEffect.DENY
     )
     
     # Add allow rule for verified agents with good trust
     policy.add_rule(PolicyRule(
+        rule_id="allow-verified",
         name="Allow Verified High-Trust",
         effect=PolicyEffect.ALLOW,
         priority=100,
         conditions=[
             PolicyCondition(
-                type="identity_verified",
-                operator="eq",
+                field="identity_verified",
+                operator=PolicyOperator.EQUALS,
                 value=True
             ),
             PolicyCondition(
-                type="trust_score",
-                operator="gte",
+                field="trust_score",
+                operator=PolicyOperator.GREATER_THAN_OR_EQUAL,
                 value=0.7
             )
         ]
@@ -193,19 +298,25 @@ def sample_policy() -> Policy:
     
     # Add budget
     policy.add_budget(Budget(
+        budget_id="daily-limit",
         name="Daily Limit",
         period=BudgetPeriod.DAILY,
-        max_calls=1000,
-        max_cost=10.0
+        limit=10.0
     ))
     
     return policy
 
 
 @pytest.fixture
-def policy_engine(sample_policy) -> PolicyEngine:
-    """Create a policy engine with sample policy."""
-    return PolicyEngine(sample_policy)
+def policy_engine() -> PolicyEngine:
+    """Create a policy engine."""
+    return PolicyEngine()
+
+
+@pytest.fixture
+def policy_loader() -> PolicyLoader:
+    """Create a policy loader."""
+    return PolicyLoader()
 
 
 @pytest.fixture
@@ -245,7 +356,6 @@ def mcp_server_url() -> str:
 @pytest.fixture
 def sample_agent_card() -> AgentCard:
     """Create a sample agent card."""
-    from oai_network.protocols.a2a.models import AgentCard
     return AgentCard(
         agent_did="did:oai:test123",
         name="Test Agent",
@@ -253,4 +363,14 @@ def sample_agent_card() -> AgentCard:
         version="1.0.0",
         capabilities=["text_summarization"],
         endpoints={"a2a": "http://localhost:8000/a2a"}
+    )
+
+
+@pytest.fixture
+def python_sdk_client(sample_agent_identity):
+    """Create a Python SDK client for testing."""
+    from oai_network.sdk.python.client import OAIClient
+    return OAIClient(
+        registry_url="http://localhost:8000",
+        identity=sample_agent_identity,
     )

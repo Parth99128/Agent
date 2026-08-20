@@ -5,7 +5,16 @@ Validates agent manifests against schemas and business rules.
 """
 
 from typing import Optional
-from .models import AgentManifest, Capability, CapabilityType, ServiceEndpoint
+from dataclasses import dataclass
+from .models import AgentManifest, Capability, ServiceEndpoint
+
+
+@dataclass
+class ValidationResult:
+    """Result of manifest validation."""
+    valid: bool
+    errors: list[str]
+    warnings: list[str]
 
 
 class ManifestValidator:
@@ -17,12 +26,12 @@ class ManifestValidator:
         self.errors: list[str] = []
         self.warnings: list[str] = []
     
-    def validate(self, manifest: AgentManifest) -> tuple[bool, list[str], list[str]]:
+    def validate(self, manifest: AgentManifest) -> ValidationResult:
         """
         Validate a complete agent manifest.
         
         Returns:
-            Tuple of (is_valid, errors, warnings)
+            ValidationResult with valid, errors, warnings
         """
         self.errors = []
         self.warnings = []
@@ -42,11 +51,15 @@ class ManifestValidator:
         # Validate policy settings
         self._validate_policy(manifest)
         
-        return len(self.errors) == 0, self.errors, self.warnings
+        return ValidationResult(
+            valid=len(self.errors) == 0,
+            errors=self.errors,
+            warnings=self.warnings
+        )
     
     def _validate_identity(self, manifest: AgentManifest):
         """Validate identity fields."""
-        if not manifest.agent_did or not manifest.agent_did.startswith('did:'):
+        if not manifest.identity or not manifest.identity.did or not manifest.identity.did.startswith('did:'):
             self.errors.append("Invalid agent DID: must start with 'did:'")
         
         if not manifest.name or not manifest.name.strip():
@@ -58,7 +71,7 @@ class ManifestValidator:
     def _validate_capabilities(self, manifest: AgentManifest):
         """Validate capabilities list."""
         if not manifest.capabilities:
-            self.warnings.append("Agent has no capabilities registered")
+            self.errors.append("Agent has no capabilities registered")
             return
         
         seen_names = set()
@@ -82,15 +95,18 @@ class ManifestValidator:
             self.warnings.append(f"{prefix}: Description is empty")
         
         # Validate input schema
-        if cap.input_schema.type != "object":
-            self.warnings.append(f"{prefix}: Input schema should be type 'object'")
+        if isinstance(cap.input_schema, dict):
+            if cap.input_schema.get("type") != "object":
+                self.warnings.append(f"{prefix}: Input schema should be type 'object'")
+        else:
+            self.errors.append(f"{prefix}: Input schema must be a dictionary")
         
         # Validate pricing
-        if cap.pricing.value != "free" and cap.price_per_unit is None:
-            self.errors.append(f"{prefix}: Price per unit required for paid capabilities")
+        if cap.pricing.model != "free" and cap.pricing.price_per_call is None:
+            self.errors.append(f"{prefix}: Price per call required for paid capabilities")
         
-        if cap.price_per_unit is not None and cap.price_per_unit < 0:
-            self.errors.append(f"{prefix}: Price per unit cannot be negative")
+        if cap.pricing.price_per_call is not None and cap.pricing.price_per_call < 0:
+            self.errors.append(f"{prefix}: Price per call cannot be negative")
         
         # Validate limits
         if cap.max_concurrent_requests <= 0:
@@ -102,7 +118,7 @@ class ManifestValidator:
     def _validate_endpoints(self, manifest: AgentManifest):
         """Validate service endpoints."""
         if not manifest.endpoints:
-            self.warnings.append("No service endpoints defined")
+            self.errors.append("No service endpoints defined")
             return
         
         for i, endpoint in enumerate(manifest.endpoints):
@@ -117,22 +133,27 @@ class ManifestValidator:
             
             if endpoint.rate_limit is not None and endpoint.rate_limit <= 0:
                 self.errors.append(f"Endpoint[{i}]: Rate limit must be positive")
+            
+            # Validate protocol
+            valid_protocols = ["http", "https", "grpc", "websocket", "a2a", "mcp"]
+            if endpoint.protocol not in valid_protocols:
+                self.errors.append(f"Endpoint[{i}]: Invalid protocol '{endpoint.protocol}'. Must be one of: {', '.join(valid_protocols)}")
     
     def _validate_trust(self, manifest: AgentManifest):
         """Validate trust metrics."""
         trust = manifest.trust_metrics
         
-        if not 0.0 <= trust.overall_score <= 1.0:
-            self.errors.append("Trust overall_score must be between 0 and 1")
+        if not 0.0 <= trust.score <= 1.0:
+            self.errors.append("Trust score must be between 0 and 1")
         
         if not 0.0 <= trust.success_rate <= 1.0:
             self.errors.append("Trust success_rate must be between 0 and 1")
         
-        if trust.avg_latency_ms < 0:
-            self.errors.append("Trust avg_latency_ms cannot be negative")
+        if trust.average_latency_ms < 0:
+            self.errors.append("Trust average_latency_ms cannot be negative")
         
-        if trust.total_interactions < 0:
-            self.errors.append("Trust total_interactions cannot be negative")
+        if trust.interaction_count < 0:
+            self.errors.append("Trust interaction_count cannot be negative")
     
     def _validate_policy(self, manifest: AgentManifest):
         """Validate policy settings."""

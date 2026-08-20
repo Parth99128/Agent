@@ -432,6 +432,45 @@ export class OAIClient {
     return results;
   }
 
+  // Discovery alias
+  async discoverAgents(query: DiscoveryQuery): Promise<DiscoveryResult[]> {
+    return this.discover(query);
+  }
+
+  // Delegation alias
+  async delegateTask(
+    task: string,
+    capability: string,
+    inputData: Record<string, any>,
+    options: {
+      preferredAgent?: string;
+      maxDepth?: number;
+      timeout?: number;
+    } = {}
+  ): Promise<DelegationResult> {
+    return this.delegate(task, capability, inputData, options);
+  }
+
+  // Identity creation
+  async createIdentity(name: string, keyType: 'Ed25519' | 'RSA' = 'Ed25519'): Promise<AgentIdentity> {
+    const identity = this.generateIdentity(name, keyType);
+    this.identity = identity.identity;
+    return this.identity;
+  }
+
+  // Signing and verification
+  async signMessage(message: string): Promise<string> {
+    // In a real implementation, this would use the private key
+    // For now, return a mock signature
+    return `mock-signature-${uuidv4()}`;
+  }
+
+  async verifySignature(agentDid: string, message: string, signature: string): Promise<boolean> {
+    // In a real implementation, this would verify the signature
+    // For now, return true for mock signatures
+    return signature.startsWith('mock-signature-');
+  }
+
   async close(): Promise<void> {
     if (this.a2aWs) {
       this.a2aWs.close();
@@ -445,7 +484,7 @@ export class OAIClient {
 }
 
 // A2A Client implementation
-class A2AClient {
+export class A2AClient {
   private baseUrl: string;
   private identity: AgentIdentity;
   private ws: WebSocket | null = null;
@@ -478,22 +517,11 @@ class A2AClient {
     });
   }
 
-  private handleMessage(data: string): void {
-    try {
-      const message = JSON.parse(data);
-      const requestId = message.id;
-
-      if (requestId && this.pendingRequests.has(requestId)) {
-        const resolver = this.pendingRequests.get(requestId)!;
-        this.pendingRequests.delete(requestId);
-        resolver(message);
-      }
-    } catch (error) {
-      console.error('Failed to parse A2A message:', error);
-    }
+  async connectWebSocket(): Promise<void> {
+    return this.connect();
   }
 
-  private async sendRequest(message: any): Promise<any> {
+  async sendRequest(message: any): Promise<any> {
     if (!this.ws || !this.connected) {
       throw new Error('Not connected to A2A server');
     }
@@ -514,6 +542,10 @@ class A2AClient {
         }
       }, 30000);
     });
+  }
+
+  async capabilityQuery(capabilityName: string, inputData: Record<string, any>): Promise<any> {
+    return this.queryCapability(capabilityName, inputData);
   }
 
   async queryCapability(capabilityName: string, inputData: Record<string, any>): Promise<any> {

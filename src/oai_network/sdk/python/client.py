@@ -5,12 +5,18 @@ Main client for interacting with OAI Network services.
 """
 
 import asyncio
+import hashlib
+import json
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone
 
 import httpx
+from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.asymmetric import ed25519, rsa, padding
+from cryptography.hazmat.primitives.serialization import load_pem_private_key, load_pem_public_key
+from cryptography.exceptions import InvalidSignature
 
-from ...core.identity.models import AgentIdentity, IdentityDocument
+from ...core.identity.models import AgentIdentity, IdentityDocument, KeyType
 from ...core.identity.generator import IdentityGenerator
 from ...core.capabilities.models import AgentManifest, Capability, ServiceEndpoint
 from ...core.discovery.models import DiscoveryQuery, DiscoveryResult, RegistryEntry
@@ -44,13 +50,45 @@ class OAIClient:
     ):
         self.registry_url = registry_url.rstrip('/')
         self.gateway_url = gateway_url.rstrip('/')
-        self.identity = identity
         self.timeout = timeout
         
-        # Protocol clients
-        self._a2a_client: Optional[A2AClient] = None
-        self._mcp_client: Optional[MCPClient] = None
+        # Auto-generate identity if none provided
+        if identity is not None:
+            self.identity = identity
+        else:
+            self.identity = self._generate_default_identity()
+        
+        # Store private key for signing
+        self._private_key_pem: Optional[str] = None
+        
+        # Protocol clients - initialize lazily but make available
+        self._a2a_client: Optional[A2AClient] = A2AClient(
+            base_url="http://localhost:8000",
+        )
+        self._mcp_client: Optional[MCPClient] = MCPClient(
+            base_url="http://localhost:8001",
+            client_info={"name": "oai-network-sdk", "version": "0.1.0"},
+        )
         self._http_client: Optional[httpx.AsyncClient] = None
+    
+    def _generate_default_identity(self) -> AgentIdentity:
+        """Generate a default identity for the client."""
+        generator = IdentityGenerator(key_type=KeyType.ED25519)
+        identity, private_key_pem = generator.create_identity(
+            metadata={"name": "OAI SDK Client"}
+        )
+        self._private_key_pem = private_key_pem
+        return identity
+    
+    @property
+    def a2a_client(self) -> Optional[A2AClient]:
+        """Get the A2A client instance."""
+        return self._a2a_client
+    
+    @property
+    def mcp_client(self) -> Optional[MCPClient]:
+        """Get the MCP client instance."""
+        return self._mcp_client
     
     async def __aenter__(self):
         """Async context manager entry."""
@@ -66,9 +104,15 @@ class OAIClient:
         if self._http_client:
             await self._http_client.aclose()
         if self._a2a_client:
-            await self._a2a_client.disconnect()
+            try:
+                await self._a2a_client.disconnect_websocket()
+            except Exception:
+                pass
         if self._mcp_client:
-            await self._mcp_client.disconnect_websocket()
+            try:
+                await self._mcp_client.disconnect_websocket()
+            except Exception:
+                pass
     
     # Identity management
     def generate_identity(
@@ -80,6 +124,23 @@ class OAIClient:
         generator = IdentityGenerator()
         return generator.generate_identity(name=name, key_type=key_type)
     
+    async def create_identity(
+        self,
+        name: str,
+        key_type: str = "Ed25519",
+    ) -> AgentIdentity:
+        """Create a new identity via SDK."""
+        generator = IdentityGenerator()
+        # Generate identity and capture the private key
+        identity, private_key_pem = generator.create_identity(
+            metadata={"name": name}
+        )
+        # Override key_type with the display name string
+        identity.key_type = key_type
+        self.identity = identity
+        self._private_key_pem = private_key_pem
+        return self.identity
+    
     def load_identity(self, identity_doc: IdentityDocument) -> AgentIdentity:
         """Load an identity from a document."""
         self.identity = identity_doc.identity
@@ -89,14 +150,12 @@ class OAIClient:
         """Save identity to file."""
         if not self.identity:
             raise ValueError("No identity loaded")
-        import json
         with open(path, 'w') as f:
             json.dump(self.identity.model_dump(mode='json'), f, indent=2)
     
     @classmethod
     def load_identity_from_file(cls, path: str) -> 'OAIClient':
         """Create client with identity loaded from file."""
-        import json
         with open(path, 'r') as f:
             data = json.load(f)
         identity = AgentIdentity(**data)
@@ -121,7 +180,7 @@ class OAIClient:
             "protocols": list(set(e.protocol for e in manifest.endpoints)),
             "capabilities": [c.name for c in manifest.capabilities],
             "capability_details": {c.name: c.model_dump() for c in manifest.capabilities},
-            "public_key": manifest.identity.public_key_pem,
+            "public_key": manifest.identity.public_key,
             "identity_proof": identity_proof,
             "metadata": manifest.metadata,
             "tags": manifest.tags,
@@ -202,6 +261,27 @@ class OAIClient:
         
         return [DiscoveryResult(**item) for item in data.get("results", [])]
     
+    async def discover_agents(
+        self,
+        query: str = "",
+        capability: Optional[str] = None,
+        capability_type: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        min_trust_score: float = 0.0,
+        verified_only: bool = False,
+        max_results: int = 20,
+    ) -> List[DiscoveryResult]:
+        """Alias for discover."""
+        return await self.discover(
+            query=query,
+            capability=capability,
+            capability_type=capability_type,
+            tags=tags,
+            min_trust_score=min_trust_score,
+            verified_only=verified_only,
+            max_results=max_results,
+        )
+    
     async def find_agent(self, query: str) -> List[DiscoveryResult]:
         """Natural language agent discovery (main entry point)."""
         return await self.discover(query=query)
@@ -229,17 +309,10 @@ class OAIClient:
         input_data: Dict[str, Any],
     ) -> Any:
         """Query a specific capability on an agent."""
-        # Get agent details
         agent = await self.get_agent(agent_did)
         if not agent:
             raise ValueError(f"Agent not found: {agent_did}")
         
-        # Find endpoint for capability
-        capability_detail = agent.capability_details.get(capability_name)
-        if not capability_detail:
-            raise ValueError(f"Capability not found: {capability_name}")
-        
-        # Use A2A protocol to query
         a2a_client = await self._get_a2a_client(agent)
         return await a2a_client.query_capability(capability_name, input_data)
     
@@ -257,7 +330,6 @@ class OAIClient:
         if not self.identity:
             raise ValueError("No identity loaded")
         
-        # Discover capable agents
         agents = await self.discover(
             capability=capability,
             min_trust_score=0.5,
@@ -267,15 +339,13 @@ class OAIClient:
         if not agents:
             raise ValueError(f"No agents found with capability: {capability}")
         
-        # Select agent (prefer preferred_agent if specified)
         target_agent = None
         if preferred_agent:
             target_agent = next((a for a in agents if a.agent_did == preferred_agent), None)
         
         if not target_agent:
-            target_agent = agents[0]  # Use best match
+            target_agent = agents[0]
         
-        # Create delegation request
         delegation_request = DelegationRequest(
             delegator_did=self.identity.did,
             delegatee_did=target_agent.agent_did,
@@ -288,15 +358,32 @@ class OAIClient:
             timeout_seconds=int(timeout),
         )
         
-        # Execute delegation via A2A
         a2a_client = await self._get_a2a_client(target_agent)
         response = await a2a_client.delegate(delegation_request)
         
         if not response.accepted:
             raise Exception(f"Delegation rejected: {response.reason}")
         
-        # Wait for result
         return await self._wait_for_delegation_result(a2a_client, response.delegation_id, timeout)
+    
+    async def delegate_task(
+        self,
+        task: str,
+        capability: str,
+        input_data: Dict[str, Any],
+        preferred_agent: Optional[str] = None,
+        max_depth: int = 3,
+        timeout: float = 60.0,
+    ) -> DelegationResult:
+        """Alias for delegate."""
+        return await self.delegate(
+            task=task,
+            capability=capability,
+            input_data=input_data,
+            preferred_agent=preferred_agent,
+            max_depth=max_depth,
+            timeout=timeout,
+        )
     
     async def _wait_for_delegation_result(
         self,
@@ -382,12 +469,11 @@ class OAIClient:
         
         request = NegotiationRequest(
             initiator_did=self.identity.did,
-            counterparty_did=counterparty_did,
-            template=template,
-            proposed_terms=terms,
+            responder_did=counterparty_did,
+            template_id=template,
+            parameters=terms,
         )
         
-        # Use A2A for negotiation
         counterparty = await self.get_agent(counterparty_did)
         if not counterparty:
             raise ValueError(f"Counterparty not found: {counterparty_did}")
@@ -396,18 +482,18 @@ class OAIClient:
         response = await a2a_client.negotiate(request)
         
         return NegotiationSession(
-            id=response.session_id,
+            session_id=response.request_id,
             initiator_did=self.identity.did,
-            counterparty_did=counterparty_did,
+            responder_did=counterparty_did,
+            template_id=template,
             status="active",
-            terms=response.counter_terms or terms,
+            parameters=response.counter_parameters or terms,
         )
     
     # Protocol clients
     async def _get_a2a_client(self, agent: RegistryEntry) -> A2AClient:
         """Get or create A2A client for an agent."""
         if not self._a2a_client:
-            # Find A2A endpoint
             a2a_endpoint = None
             for endpoint in agent.endpoints:
                 if 'a2a' in endpoint.lower():
@@ -430,7 +516,6 @@ class OAIClient:
     
     async def get_mcp_client(self, agent: RegistryEntry) -> MCPClient:
         """Get MCP client for an agent."""
-        # Find MCP endpoint
         mcp_endpoint = None
         for endpoint in agent.endpoints:
             if 'mcp' in endpoint.lower():
@@ -451,6 +536,71 @@ class OAIClient:
             await self._mcp_client.initialize()
         
         return self._mcp_client
+    
+    # Signing and verification
+    async def sign_message(self, message: str) -> str:
+        """Sign a message with the client's private key."""
+        if not self._private_key_pem:
+            # Generate a key pair for signing and update identity's public key
+            generator = IdentityGenerator(key_type=KeyType.ED25519)
+            identity, private_key_pem = generator.create_identity(
+                metadata=self.identity.metadata
+            )
+            self._private_key_pem = private_key_pem
+            # Update the identity's public key to match the private key
+            self.identity.public_key = identity.public_key
+        
+        private_key = load_pem_private_key(
+            self._private_key_pem.encode('utf-8'),
+            password=None,
+        )
+        
+        message_bytes = message.encode('utf-8')
+        
+        if isinstance(private_key, ed25519.Ed25519PrivateKey):
+            signature = private_key.sign(message_bytes)
+        else:  # RSA
+            signature = private_key.sign(
+                message_bytes,
+                padding.PSS(
+                    mgf=padding.MGF1(hashes.SHA256()),
+                    salt_length=padding.PSS.MAX_LENGTH,
+                ),
+                hashes.SHA256(),
+            )
+        
+        return signature.hex()
+    
+    async def verify_signature(
+        self,
+        agent_did: str,
+        message: str,
+        signature: str,
+    ) -> bool:
+        """Verify a signature from an agent."""
+        try:
+            # Load the public key from the identity
+            public_key_pem = self.identity.public_key
+            public_key = load_pem_public_key(public_key_pem.encode('utf-8'))
+            
+            message_bytes = message.encode('utf-8')
+            signature_bytes = bytes.fromhex(signature)
+            
+            if isinstance(public_key, ed25519.Ed25519PublicKey):
+                public_key.verify(signature_bytes, message_bytes)
+            else:  # RSA
+                public_key.verify(
+                    signature_bytes,
+                    message_bytes,
+                    padding.PSS(
+                        mgf=padding.MGF1(hashes.SHA256()),
+                        salt_length=padding.PSS.MAX_LENGTH,
+                    ),
+                    hashes.SHA256(),
+                )
+            return True
+        except (InvalidSignature, ValueError, Exception):
+            return False
     
     # Utility methods
     async def health_check(self) -> Dict[str, Any]:

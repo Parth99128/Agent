@@ -84,6 +84,35 @@ class IdentityGenerator:
         
         return identity, private_key_pem
     
+    def generate_identity(self, name: str, key_type: str = "Ed25519", metadata: Optional[dict] = None) -> IdentityDocument:
+        """
+        Generate a new agent identity with key pair.
+        
+        Args:
+            name: Agent name (added to metadata)
+            key_type: Key type string (Ed25519, RSA_2048, RSA_4096)
+            metadata: Additional metadata
+            
+        Returns:
+            IdentityDocument with identity and proof
+        """
+        # Update key type if provided
+        if key_type:
+            key_type_map = {
+                "Ed25519": KeyType.ED25519,
+                "RSA_2048": KeyType.RSA_2048,
+                "RSA_4096": KeyType.RSA_4096,
+            }
+            if key_type in key_type_map:
+                self.key_type = key_type_map[key_type]
+        
+        # Add name to metadata
+        meta = metadata or {}
+        meta["name"] = name
+        
+        identity_doc, _ = self.create_identity_document(meta)
+        return identity_doc
+    
     def create_identity_document(
         self, 
         metadata: Optional[dict] = None,

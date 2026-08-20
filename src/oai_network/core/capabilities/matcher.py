@@ -5,7 +5,36 @@ Matches natural language queries to agent capabilities.
 """
 
 from typing import Optional
+from dataclasses import dataclass
 from .models import AgentManifest, Capability
+
+
+@dataclass
+class MatchResult:
+    """Result of a capability match."""
+    agent_did: str
+    agent_name: str
+    agent_description: str
+    capability_name: str
+    capability_type: str
+    relevance_score: float
+    trust_score: float
+    estimated_latency_ms: Optional[int] = None
+    price_per_unit: Optional[float] = None
+    currency: str = "USD"
+    endpoint_url: str = ""
+    tags: list[str] = None
+    verified: bool = False
+    last_updated: str = ""
+    
+    def __post_init__(self):
+        if self.tags is None:
+            self.tags = []
+    
+    @property
+    def average_latency_ms(self) -> Optional[int]:
+        """Alias for estimated_latency_ms for backward compatibility."""
+        return self.estimated_latency_ms
 
 
 class CapabilityMatcher:
@@ -24,28 +53,72 @@ class CapabilityMatcher:
     
     def match(
         self, 
-        query: str, 
         manifests: list[AgentManifest],
-        capability_type: Optional[str] = None
-    ) -> list[tuple[AgentManifest, Capability, float]]:
+        query: Optional[str] = None,
+        capability_type: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        rank_by: Optional[str] = None
+    ) -> list[MatchResult]:
         """
         Match a query against multiple agent manifests.
         
         Returns:
-            List of (manifest, capability, score) tuples sorted by score descending
+            List of MatchResult objects sorted by score descending
         """
         results = []
         
         for manifest in manifests:
-            matches = manifest.find_capabilities(query, self.min_score)
+            if query:
+                matches = manifest.find_capabilities(query, self.min_score)
+            else:
+                # If no query, match all capabilities
+                matches = [(cap, 1.0) for cap in manifest.capabilities]
+            
             for capability, score in matches:
                 # Filter by type if specified
-                if capability_type and capability.type.value != capability_type:
+                if capability_type and capability.type != capability_type:
                     continue
-                results.append((manifest, capability, score))
+                
+                # Filter by tags if specified
+                if tags:
+                    tag_match = any(tag.lower() in [t.lower() for t in capability.tags] for tag in tags)
+                    if not tag_match:
+                        continue
+                
+                # Get primary endpoint
+                endpoint_url = ""
+                if manifest.endpoints:
+                    endpoint_url = manifest.endpoints[0].url
+                
+                result = MatchResult(
+                    agent_did=manifest.identity.did,
+                    agent_name=manifest.name,
+                    agent_description=manifest.description,
+                    capability_name=capability.name,
+                    capability_type=capability.type,
+                    relevance_score=score,
+                    trust_score=manifest.trust_metrics.score,
+                    estimated_latency_ms=manifest.trust_metrics.average_latency_ms or capability.estimated_latency_ms,
+                    price_per_unit=capability.pricing.price_per_call,
+                    currency=capability.pricing.currency,
+                    endpoint_url=endpoint_url,
+                    tags=capability.tags,
+                    verified=manifest.trust_metrics.verified_identity,
+                    last_updated=manifest.updated_at.isoformat() if manifest.updated_at else ""
+                )
+                results.append(result)
         
-        # Sort by score descending
-        results.sort(key=lambda x: x[2], reverse=True)
+        # Apply ranking
+        if rank_by == "trust":
+            results.sort(key=lambda x: x.trust_score, reverse=True)
+        elif rank_by == "latency":
+            results.sort(key=lambda x: x.estimated_latency_ms or float('inf'))
+        elif rank_by == "price":
+            results.sort(key=lambda x: x.price_per_unit or float('inf'))
+        else:
+            # Default: sort by relevance score
+            results.sort(key=lambda x: x.relevance_score, reverse=True)
+        
         return results
     
     def match_single_manifest(
@@ -60,7 +133,7 @@ class CapabilityMatcher:
         if capability_type:
             matches = [
                 (cap, score) for cap, score in matches 
-                if cap.type.value == capability_type
+                if cap.type == capability_type
             ]
         
         return matches
@@ -74,7 +147,7 @@ class CapabilityMatcher:
         results = []
         for manifest in manifests:
             for cap in manifest.capabilities:
-                if cap.type.value == capability_type:
+                if cap.type == capability_type:
                     results.append((manifest, cap))
         return results
     

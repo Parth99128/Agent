@@ -6,52 +6,9 @@ Data models for agent capabilities and manifests.
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Optional, Dict, List
 from pydantic import BaseModel, Field, field_validator
 import json
-
-
-class CapabilityType(str, Enum):
-    """Types of capabilities an agent can offer."""
-    # Data processing
-    CODE_ANALYSIS = "code_analysis"
-    DATA_ANALYSIS = "data_analysis"
-    TEXT_PROCESSING = "text_processing"
-    IMAGE_PROCESSING = "image_processing"
-    AUDIO_PROCESSING = "audio_processing"
-    
-    # Code operations
-    CODE_GENERATION = "code_generation"
-    CODE_REVIEW = "code_review"
-    REFACTORING = "refactoring"
-    TESTING = "testing"
-    DEBUGGING = "debugging"
-    
-    # Information retrieval
-    SEARCH = "search"
-    RESEARCH = "research"
-    SUMMARIZATION = "summarization"
-    TRANSLATION = "translation"
-    
-    # System operations
-    FILE_OPERATIONS = "file_operations"
-    SHELL_COMMANDS = "shell_commands"
-    API_INTEGRATION = "api_integration"
-    DATABASE_QUERY = "database_query"
-    
-    # AI/ML operations
-    MODEL_INFERENCE = "model_inference"
-    MODEL_TRAINING = "model_training"
-    EMBEDDING = "embedding"
-    CLASSIFICATION = "classification"
-    
-    # Coordination
-    TASK_DELEGATION = "task_delegation"
-    WORKFLOW_ORCHESTRATION = "workflow_orchestration"
-    AGENT_COORDINATION = "agent_coordination"
-    
-    # Custom/extensible
-    CUSTOM = "custom"
 
 
 class PricingModel(str, Enum):
@@ -78,37 +35,12 @@ class ServiceEndpoint(BaseModel):
     """Network endpoint where the agent can be reached."""
     url: str = Field(..., description="Base URL for the agent's API")
     protocol: str = Field(default="http", description="Protocol (http, https, ws, wss)")
+    description: str = Field(default="", description="Endpoint description")
     auth_required: bool = Field(default=True, description="Whether authentication is required")
     auth_type: str = Field(default="bearer", description="Authentication type")
     rate_limit: Optional[int] = Field(None, description="Requests per minute limit")
     timeout_seconds: int = Field(default=30, description="Request timeout")
     health_check_path: str = Field(default="/health", description="Health check endpoint path")
-
-
-class InputSchema(BaseModel):
-    """JSON Schema for capability input validation."""
-    type: str = Field(default="object", description="Schema type")
-    properties: dict[str, Any] = Field(default_factory=dict, description="Property definitions")
-    required: list[str] = Field(default_factory=list, description="Required property names")
-    additional_properties: bool = Field(default=False, description="Allow additional properties")
-    
-    def validate(self, data: dict) -> tuple[bool, list[str]]:
-        """Validate input data against this schema."""
-        import jsonschema
-        try:
-            jsonschema.validate(instance=data, schema=self.model_dump())
-            return True, []
-        except jsonschema.ValidationError as e:
-            return False, [str(e)]
-        except Exception as e:
-            return False, [f"Validation error: {str(e)}"]
-
-
-class OutputSchema(BaseModel):
-    """JSON Schema for capability output validation."""
-    type: str = Field(default="object", description="Schema type")
-    properties: dict[str, Any] = Field(default_factory=dict, description="Property definitions")
-    required: list[str] = Field(default_factory=list, description="Required property names")
 
 
 class Capability(BaseModel):
@@ -119,13 +51,13 @@ class Capability(BaseModel):
     and other agents search for capabilities they need.
     """
     name: str = Field(..., description="Unique name for this capability")
-    type: CapabilityType = Field(..., description="Type of capability")
+    type: str = Field(..., description="Type of capability")
     description: str = Field(..., description="Human-readable description")
     version: str = Field(default="1.0.0", description="Capability version")
     
-    # I/O schemas
-    input_schema: InputSchema = Field(default_factory=InputSchema, description="Expected input format")
-    output_schema: OutputSchema = Field(default_factory=OutputSchema, description="Expected output format")
+    # I/O schemas (as raw dicts for flexibility)
+    input_schema: Dict[str, Any] = Field(default_factory=dict, description="Expected input format")
+    output_schema: Dict[str, Any] = Field(default_factory=dict, description="Expected output format")
     
     # Pricing and limits
     pricing: CapabilityPricing = Field(default_factory=lambda: CapabilityPricing(), description="Pricing configuration")
@@ -154,43 +86,73 @@ class Capability(BaseModel):
             raise ValueError("Capability name cannot be empty")
         return v.strip().lower().replace(' ', '_')
     
+    @field_validator('input_schema', 'output_schema', mode='before')
+    @classmethod
+    def validate_schema(cls, v):
+        if v is None:
+            return {}
+        if isinstance(v, dict):
+            return v
+        return {}
+    
     def matches_query(self, query: str, threshold: float = 0.5) -> float:
         """
         Check if this capability matches a natural language query.
         Returns a similarity score between 0 and 1.
         """
-        query_lower = query.lower()
+        query_lower = query.lower().strip()
         score = 0.0
-        
-        # Check name match
-        if query_lower in self.name.lower():
+
+        # Normalize: replace spaces with underscores for name comparison
+        query_underscore = query_lower.replace(" ", "_")
+        name_lower = self.name.lower()
+
+        # Check name match (exact or substring, with space or underscore)
+        if query_lower in name_lower or query_underscore in name_lower:
             score += 0.4
-        
-        # Check description match
-        if query_lower in self.description.lower():
+        elif name_lower in query_lower:
             score += 0.3
-        
+
+        # Check description match
+        desc_lower = self.description.lower()
+        if query_lower in desc_lower:
+            score += 0.3
+        else:
+            # Check word-level overlap
+            query_words = set(query_lower.split())
+            desc_words = set(desc_lower.replace("_", " ").split())
+            overlap = query_words & desc_words
+            if overlap:
+                score += min(0.3, 0.1 * len(overlap))
+
         # Check tags
         for tag in self.tags:
-            if query_lower in tag.lower():
+            tag_lower = tag.lower()
+            if query_lower in tag_lower or query_underscore in tag_lower:
                 score += 0.2
                 break
-        
+            # Check word-level tag match
+            tag_words = set(tag_lower.replace("_", " ").split())
+            query_words = set(query_lower.split())
+            if tag_words & query_words:
+                score += 0.15
+                break
+
         # Check categories
         for cat in self.categories:
             if query_lower in cat.lower():
                 score += 0.1
                 break
-        
+
         return min(score, 1.0)
 
 
 class TrustMetrics(BaseModel):
     """Trust and reputation metrics for an agent."""
-    overall_score: float = Field(default=0.5, ge=0.0, le=1.0, description="Overall trust score (0-1)")
+    score: float = Field(default=0.5, ge=0.0, le=1.0, description="Overall trust score (0-1)")
+    interaction_count: int = Field(default=0, description="Total number of interactions")
     success_rate: float = Field(default=0.0, ge=0.0, le=1.0, description="Successful interactions / total")
-    avg_latency_ms: float = Field(default=0.0, description="Average response latency")
-    total_interactions: int = Field(default=0, description="Total number of interactions")
+    average_latency_ms: float = Field(default=0.0, description="Average response latency")
     positive_feedback: int = Field(default=0, description="Positive feedback count")
     negative_feedback: int = Field(default=0, description="Negative feedback count")
     last_interaction: Optional[datetime] = Field(None, description="Last interaction timestamp")
@@ -198,21 +160,21 @@ class TrustMetrics(BaseModel):
     
     def update_on_success(self, latency_ms: float):
         """Update metrics after a successful interaction."""
-        self.total_interactions += 1
+        self.interaction_count += 1
         self.success_rate = (
-            (self.success_rate * (self.total_interactions - 1) + 1.0) / self.total_interactions
+            (self.success_rate * (self.interaction_count - 1) + 1.0) / self.interaction_count
         )
-        self.avg_latency_ms = (
-            (self.avg_latency_ms * (self.total_interactions - 1) + latency_ms) / self.total_interactions
+        self.average_latency_ms = (
+            (self.average_latency_ms * (self.interaction_count - 1) + latency_ms) / self.interaction_count
         )
         self.last_interaction = datetime.now(timezone.utc)
         self._recalculate_score()
     
     def update_on_failure(self):
         """Update metrics after a failed interaction."""
-        self.total_interactions += 1
+        self.interaction_count += 1
         self.success_rate = (
-            self.success_rate * (self.total_interactions - 1) / self.total_interactions
+            self.success_rate * (self.interaction_count - 1) / self.interaction_count
         )
         self.last_interaction = datetime.now(timezone.utc)
         self._recalculate_score()
@@ -248,9 +210,9 @@ class TrustMetrics(BaseModel):
             recency_score = max(0.1, 1.0 - (days_since * 0.05))
         
         # Volume score (more interactions = more confidence)
-        volume_score = min(1.0, self.total_interactions / 100)
+        volume_score = min(1.0, self.interaction_count / 100)
         
-        self.overall_score = (
+        self.score = (
             weights['success_rate'] * self.success_rate +
             weights['feedback'] * feedback_score +
             weights['recency'] * recency_score +
@@ -265,7 +227,7 @@ class AgentManifest(BaseModel):
     This is what gets published to the registry for discovery.
     """
     # Identity
-    agent_did: str = Field(..., description="Agent's decentralized identifier")
+    identity: 'AgentIdentity' = Field(..., description="Agent's identity")
     name: str = Field(..., description="Human-readable agent name")
     description: str = Field(..., description="Detailed description of the agent")
     version: str = Field(default="1.0.0", description="Agent version")
@@ -275,6 +237,9 @@ class AgentManifest(BaseModel):
     
     # Network
     endpoints: list[ServiceEndpoint] = Field(default_factory=list, description="Service endpoints")
+    
+    # Tags for discovery
+    tags: list[str] = Field(default_factory=list, description="Searchable tags")
     
     # Trust
     trust_metrics: TrustMetrics = Field(default_factory=TrustMetrics, description="Trust metrics")
@@ -287,13 +252,6 @@ class AgentManifest(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: dict = Field(default_factory=dict, description="Additional metadata")
-    
-    @field_validator('agent_did')
-    @classmethod
-    def validate_did(cls, v: str) -> str:
-        if not v.startswith('did:'):
-            raise ValueError('Agent DID must start with "did:"')
-        return v
     
     def get_capability(self, name: str) -> Optional[Capability]:
         """Get a capability by name."""
@@ -314,19 +272,15 @@ class AgentManifest(BaseModel):
         return results
     
     def to_json(self) -> str:
-        """Serialize to JSON string."""
-        return self.model_dump_json(indent=2)
+        """Serialize manifest to JSON."""
+        return self.model_dump_json()
     
     @classmethod
     def from_json(cls, json_str: str) -> 'AgentManifest':
-        """Deserialize from JSON string."""
+        """Deserialize manifest from JSON."""
         return cls.model_validate_json(json_str)
-    
-    def to_dict(self) -> dict:
-        """Convert to dictionary."""
-        return self.model_dump(mode='json')
-    
-    @classmethod
-    def from_dict(cls, data: dict) -> 'AgentManifest':
-        """Create from dictionary."""
-        return cls(**data)
+
+
+# Forward reference resolution
+from oai_network.core.identity.models import AgentIdentity
+AgentManifest.model_rebuild()

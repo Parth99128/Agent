@@ -4,6 +4,7 @@
  * Client library for interacting with the OAI Network.
  */
 
-export * from './client';
-export * from './models';
+export { OAIClient } from './client';
+export { A2AClient } from './client';
+export { MCPClient } from './client';
 export * from './types';

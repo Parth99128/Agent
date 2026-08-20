@@ -6,43 +6,30 @@ Different strategies for negotiating terms.
 
 from abc import ABC, abstractmethod
 from typing import Any
-from .models import NegotiationSession, NegotiationTopic, NegotiationRequest
 
 
 class NegotiationStrategy(ABC):
     """Base class for negotiation strategies."""
-    
+
     @abstractmethod
-    def generate_initial_terms(
-        self, 
-        request: NegotiationRequest,
-        agent_capabilities: dict[str, Any]
+    def decide(
+        self,
+        current_offer: dict[str, Any],
+        our_limit: dict[str, Any],
+        round_number: int,
+        max_rounds: int,
     ) -> dict[str, Any]:
-        """Generate initial proposed terms."""
-        pass
-    
-    @abstractmethod
-    def generate_counter_terms(
-        self, 
-        session: NegotiationSession,
-        received_terms: dict[str, Any],
-        agent_capabilities: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Generate counter-terms in response to received terms."""
-        pass
-    
-    @abstractmethod
-    def evaluate_terms(
-        self, 
-        terms: dict[str, Any],
-        agent_capabilities: dict[str, Any],
-        constraints: dict[str, Any]
-    ) -> tuple[bool, dict[str, Any]]:
         """
-        Evaluate if terms are acceptable.
-        
+        Decide whether to accept, reject, or counter-offer.
+
+        Args:
+            current_offer: The current offer parameters
+            our_limit: Our maximum acceptable limits
+            round_number: Current round number
+            max_rounds: Maximum rounds allowed
+
         Returns:
-            Tuple of (accepted, counter_terms)
+            Dict with 'action' ('accept', 'reject', 'counter') and 'parameters'
         """
         pass
 
@@ -50,265 +37,170 @@ class NegotiationStrategy(ABC):
 class CooperativeStrategy(NegotiationStrategy):
     """
     Cooperative strategy - tries to find mutually beneficial terms.
-    
-    Characteristics:
-    - Willing to compromise on price/latency
-    - Prioritizes agreement over optimal terms
-    - Good for long-term relationships
+    More willing to compromise, accepts fair offers quickly.
     """
-    
+
     def __init__(self, flexibility: float = 0.3):
-        self.flexibility = flexibility  # How much to compromise (0-1)
-    
-    def generate_initial_terms(
-        self, 
-        request: NegotiationRequest,
-        agent_capabilities: dict[str, Any]
+        self.flexibility = flexibility
+
+    def decide(
+        self,
+        current_offer: dict[str, Any],
+        our_limit: dict[str, Any],
+        round_number: int,
+        max_rounds: int,
     ) -> dict[str, Any]:
-        """Generate fair initial terms based on capabilities."""
-        terms = request.proposed_terms.copy()
-        
-        # Adjust based on our capabilities
-        if 'price_per_call' in terms and 'our_price' in agent_capabilities:
-            # Meet in the middle
-            their_price = terms['price_per_call']
-            our_price = agent_capabilities['our_price']
-            terms['price_per_call'] = (their_price + our_price) / 2
-        
-        if 'timeout_seconds' in terms and 'our_max_timeout' in agent_capabilities:
-            # Use minimum of both
-            terms['timeout_seconds'] = min(
-                terms['timeout_seconds'],
-                agent_capabilities['our_max_timeout']
-            )
-        
-        if 'rate_limit_rpm' in terms and 'our_rate_limit' in agent_capabilities:
-            # Use minimum
-            terms['rate_limit_rpm'] = min(
-                terms['rate_limit_rpm'],
-                agent_capabilities['our_rate_limit']
-            )
-        
-        return terms
-    
-    def generate_counter_terms(
-        self, 
-        session: NegotiationSession,
-        received_terms: dict[str, Any],
-        agent_capabilities: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Generate compromise counter-terms."""
+        """Decide whether to accept or counter."""
+        # Check if offer exceeds our limits
+        exceeds_limits = False
+        for key, limit in our_limit.items():
+            if key in current_offer:
+                offer_val = current_offer[key]
+                if isinstance(offer_val, (int, float)) and isinstance(limit, (int, float)):
+                    if offer_val > limit:
+                        exceeds_limits = True
+
+        # Check if offer is too far below our limits (unfair)
+        too_low = False
+        for key, limit in our_limit.items():
+            if key in current_offer:
+                offer_val = current_offer[key]
+                if isinstance(offer_val, (int, float)) and isinstance(limit, (int, float)):
+                    # If offer is less than 50% of our limit, it's too low
+                    if limit > 0 and offer_val < limit * 0.5:
+                        too_low = True
+
+        # Accept if offer is within limits and not too low
+        if not exceeds_limits and not too_low:
+            return {"action": "accept", "parameters": current_offer}
+
+        # Generate counter-offer - move toward middle
         counter = {}
-        current = session.current_terms
-        
-        # Price negotiation - move toward middle
-        if 'price_per_call' in received_terms and 'our_price' in agent_capabilities:
-            their_price = received_terms['price_per_call']
-            our_price = agent_capabilities['our_price']
-            current_price = current.get('price_per_call', their_price)
-            
-            # Move toward middle with flexibility
-            target = (their_price + our_price) / 2
-            counter['price_per_call'] = current_price + self.flexibility * (target - current_price)
-        
-        # Timeout - use minimum
-        if 'timeout_seconds' in received_terms and 'our_max_timeout' in agent_capabilities:
-            counter['timeout_seconds'] = min(
-                received_terms['timeout_seconds'],
-                agent_capabilities['our_max_timeout']
-            )
-        
-        # Rate limit - use minimum
-        if 'rate_limit_rpm' in received_terms and 'our_rate_limit' in agent_capabilities:
-            counter['rate_limit_rpm'] = min(
-                received_terms['rate_limit_rpm'],
-                agent_capabilities['our_rate_limit']
-            )
-        
-        # SLA - try to meet their requirement if reasonable
-        if 'sla_uptime' in received_terms and 'our_uptime' in agent_capabilities:
-            their_sla = received_terms['sla_uptime']
-            our_uptime = agent_capabilities['our_uptime']
-            if our_uptime >= their_sla:
-                counter['sla_uptime'] = their_sla
+        for key, limit in our_limit.items():
+            if key in current_offer:
+                offer_val = current_offer[key]
+                if isinstance(offer_val, (int, float)) and isinstance(limit, (int, float)):
+                    # Move toward middle with flexibility
+                    target = (offer_val + limit) / 2
+                    counter[key] = offer_val + self.flexibility * (target - offer_val)
+                else:
+                    counter[key] = offer_val
             else:
-                # Offer what we can do
-                counter['sla_uptime'] = our_uptime
-        
-        return counter
-    
-    def evaluate_terms(
-        self, 
-        terms: dict[str, Any],
-        agent_capabilities: dict[str, Any],
-        constraints: dict[str, Any]
-    ) -> tuple[bool, dict[str, Any]]:
-        """Evaluate if terms are acceptable."""
-        counter = {}
-        acceptable = True
-        
-        # Check price
-        if 'price_per_call' in terms and 'our_price' in agent_capabilities:
-            if terms['price_per_call'] < agent_capabilities['our_price'] * (1 - self.flexibility):
-                acceptable = False
-                counter['price_per_call'] = agent_capabilities['our_price']
-        
-        # Check constraints
-        if 'min_sla_uptime' in constraints and 'sla_uptime' in terms:
-            if terms['sla_uptime'] < constraints['min_sla_uptime']:
-                acceptable = False
-                counter['sla_uptime'] = constraints['min_sla_uptime']
-        
-        if 'max_price_per_call' in constraints and 'price_per_call' in terms:
-            if terms['price_per_call'] > constraints['max_price_per_call']:
-                acceptable = False
-                counter['price_per_call'] = constraints['max_price_per_call']
-        
-        if 'max_timeout_seconds' in constraints and 'timeout_seconds' in terms:
-            if terms['timeout_seconds'] > constraints['max_timeout_seconds']:
-                acceptable = False
-                counter['timeout_seconds'] = constraints['max_timeout_seconds']
-        
-        return acceptable, counter
+                counter[key] = limit
+
+        return {"action": "counter", "parameters": counter}
 
 
 class CompetitiveStrategy(NegotiationStrategy):
     """
-    Competitive strategy - tries to get the best terms for ourselves.
-    
-    Characteristics:
-    - Pushes for favorable pricing
-    - Less willing to compromise
-    - Good for one-off interactions
+    Competitive strategy - pushes for best terms.
+    Less willing to compromise, counters aggressively.
     """
-    
+
     def __init__(self, aggressiveness: float = 0.7):
-        self.aggressiveness = aggressiveness  # How aggressive (0-1)
-    
-    def generate_initial_terms(
-        self, 
-        request: NegotiationRequest,
-        agent_capabilities: dict[str, Any]
+        self.aggressiveness = aggressiveness
+
+    def decide(
+        self,
+        current_offer: dict[str, Any],
+        our_limit: dict[str, Any],
+        round_number: int,
+        max_rounds: int,
     ) -> dict[str, Any]:
-        """Generate aggressive initial terms."""
-        terms = request.proposed_terms.copy()
-        
-        # Push for better price
-        if 'price_per_call' in terms and 'our_price' in agent_capabilities:
-            # Ask for more than our cost
-            terms['price_per_call'] = agent_capabilities['our_price'] * (1 + self.aggressiveness)
-        
-        # Push for higher rate limits
-        if 'rate_limit_rpm' in terms and 'our_rate_limit' in agent_capabilities:
-            terms['rate_limit_rpm'] = int(agent_capabilities['our_rate_limit'] * 0.8)
-        
-        # Push for longer timeouts
-        if 'timeout_seconds' in terms and 'our_max_timeout' in agent_capabilities:
-            terms['timeout_seconds'] = int(agent_capabilities['our_max_timeout'] * 0.9)
-        
-        return terms
-    
-    def generate_counter_terms(
-        self, 
-        session: NegotiationSession,
-        received_terms: dict[str, Any],
-        agent_capabilities: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Generate counter-terms that favor us."""
+        """Decide whether to accept or counter."""
+        # Check if offer is within our limits
+        all_within_limits = True
+        for key, limit in our_limit.items():
+            if key in current_offer:
+                offer_val = current_offer[key]
+                if isinstance(offer_val, (int, float)) and isinstance(limit, (int, float)):
+                    if offer_val > limit:
+                        all_within_limits = False
+
+        # Accept if near our limit (late rounds) or within limits
+        progress = round_number / max_rounds if max_rounds > 0 else 1.0
+        if all_within_limits and progress > 0.6:
+            return {"action": "accept", "parameters": current_offer}
+
+        if all_within_limits:
+            # Still counter but closer to our limit
+            counter = {}
+            for key, limit in our_limit.items():
+                if key in current_offer:
+                    counter[key] = current_offer[key]
+                else:
+                    counter[key] = limit
+            return {"action": "counter", "parameters": counter}
+
+        # Counter aggressively - push toward our limit
         counter = {}
-        current = session.current_terms
-        
-        # Price - barely move
-        if 'price_per_call' in received_terms and 'our_price' in agent_capabilities:
-            their_price = received_terms['price_per_call']
-            our_price = agent_capabilities['our_price']
-            current_price = current.get('price_per_call', their_price)
-            
-            # Only move slightly toward their price
-            min_acceptable = our_price * (1 + self.aggressiveness * 0.5)
-            if their_price < min_acceptable:
-                counter['price_per_call'] = min_acceptable
+        for key, limit in our_limit.items():
+            if key in current_offer:
+                offer_val = current_offer[key]
+                if isinstance(offer_val, (int, float)) and isinstance(limit, (int, float)):
+                    # Move aggressively toward our limit
+                    counter[key] = offer_val + self.aggressiveness * (limit - offer_val)
+                else:
+                    counter[key] = offer_val
             else:
-                counter['price_per_call'] = current_price * 0.95  # Small concession
-        
-        # Other terms - minimal concessions
-        if 'timeout_seconds' in received_terms:
-            counter['timeout_seconds'] = max(
-                received_terms['timeout_seconds'],
-                current.get('timeout_seconds', 30)
-            )
-        
-        return counter
-    
-    def evaluate_terms(
-        self, 
-        terms: dict[str, Any],
-        agent_capabilities: dict[str, Any],
-        constraints: dict[str, Any]
-    ) -> tuple[bool, dict[str, Any]]:
-        """Evaluate terms - reject unless very favorable."""
-        counter = {}
-        acceptable = True
-        
-        # Price must be above our minimum
-        if 'price_per_call' in terms and 'our_price' in agent_capabilities:
-            min_price = agent_capabilities['our_price'] * (1 + self.aggressiveness * 0.3)
-            if terms['price_per_call'] < min_price:
-                acceptable = False
-                counter['price_per_call'] = min_price
-        
-        # Check hard constraints
-        if 'max_price_per_call' in constraints and 'price_per_call' in terms:
-            if terms['price_per_call'] > constraints['max_price_per_call']:
-                acceptable = False
-                counter['price_per_call'] = constraints['max_price_per_call']
-        
-        return acceptable, counter
+                counter[key] = limit
+
+        return {"action": "counter", "parameters": counter}
 
 
 class BalancedStrategy(NegotiationStrategy):
     """
-    Balanced strategy - adapts based on context.
-    
-    Characteristics:
-    - Cooperative with high-trust agents
-    - Competitive with unknown agents
-    - Considers relationship history
+    Balanced strategy - adapts based on round number.
+    More flexible early, more firm late.
     """
-    
-    def __init__(self, trust_threshold: float = 0.7):
-        self.trust_threshold = trust_threshold
-        self.cooperative = CooperativeStrategy()
-        self.competitive = CompetitiveStrategy()
-    
-    def _choose_strategy(self, session: NegotiationSession) -> NegotiationStrategy:
-        """Choose strategy based on trust score."""
-        # In practice, would look up trust score for counterparty
-        # For now, default to cooperative
-        return self.cooperative
-    
-    def generate_initial_terms(
-        self, 
-        request: NegotiationRequest,
-        agent_capabilities: dict[str, Any]
+
+    def __init__(self, initial_flexibility: float = 0.5):
+        self.initial_flexibility = initial_flexibility
+
+    def decide(
+        self,
+        current_offer: dict[str, Any],
+        our_limit: dict[str, Any],
+        round_number: int,
+        max_rounds: int,
     ) -> dict[str, Any]:
-        strategy = self._choose_strategy(None)
-        return strategy.generate_initial_terms(request, agent_capabilities)
-    
-    def generate_counter_terms(
-        self, 
-        session: NegotiationSession,
-        received_terms: dict[str, Any],
-        agent_capabilities: dict[str, Any]
-    ) -> dict[str, Any]:
-        strategy = self._choose_strategy(session)
-        return strategy.generate_counter_terms(session, received_terms, agent_capabilities)
-    
-    def evaluate_terms(
-        self, 
-        terms: dict[str, Any],
-        agent_capabilities: dict[str, Any],
-        constraints: dict[str, Any]
-    ) -> tuple[bool, dict[str, Any]]:
-        strategy = self._choose_strategy(None)
-        return strategy.evaluate_terms(terms, agent_capabilities, constraints)
+        """Decide whether to accept or counter, adapting based on round."""
+        # Check if offer exceeds our limits
+        exceeds_limits = False
+        for key, limit in our_limit.items():
+            if key in current_offer:
+                offer_val = current_offer[key]
+                if isinstance(offer_val, (int, float)) and isinstance(limit, (int, float)):
+                    if offer_val > limit:
+                        exceeds_limits = True
+
+        # Calculate flexibility based on round (increases over time - more willing to compromise late)
+        progress = round_number / max_rounds if max_rounds > 0 else 1.0
+        flexibility = self.initial_flexibility * progress
+
+        # Accept only if offer is exactly at or very near our limit
+        if not exceeds_limits:
+            near_limit = True
+            for key, limit in our_limit.items():
+                if key in current_offer:
+                    offer_val = current_offer[key]
+                    if isinstance(offer_val, (int, float)) and isinstance(limit, (int, float)):
+                        if limit > 0 and abs(offer_val - limit) / limit > 0.1:
+                            near_limit = False
+            if near_limit:
+                return {"action": "accept", "parameters": current_offer}
+
+        # Generate counter-offer
+        counter = {}
+        for key, limit in our_limit.items():
+            if key in current_offer:
+                offer_val = current_offer[key]
+                if isinstance(offer_val, (int, float)) and isinstance(limit, (int, float)):
+                    # Move toward our limit with decreasing flexibility
+                    counter[key] = offer_val + flexibility * (limit - offer_val)
+                else:
+                    counter[key] = offer_val
+            else:
+                counter[key] = limit
+
+        return {"action": "counter", "parameters": counter}

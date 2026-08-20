@@ -28,6 +28,7 @@ class TrustCalculator:
         behavior_weight: float = 0.20,
         half_life_days: int = 30,
         target_interactions: int = 100,
+        store: Optional['TrustStore'] = None,
     ):
         self.weights = {
             'interaction': interaction_weight,
@@ -37,6 +38,12 @@ class TrustCalculator:
         }
         self.half_life_days = half_life_days
         self.target_interactions = target_interactions
+        self.default_score = 0.5
+        self.store = store
+    
+    def set_store(self, store: 'TrustStore'):
+        """Set the trust store for calculating scores."""
+        self.store = store
     
     def calculate_from_ledger(self, ledger: ReputationLedger) -> TrustScore:
         """Calculate trust score from a reputation ledger."""
@@ -125,7 +132,8 @@ class TrustCalculator:
             feedback_score=feedback_score,
             identity_score=identity_score,
             behavior_score=behavior_score,
-            total_interactions=total_interactions,
+            event_count=len(events),
+            interaction_count=total_interactions,
             successful_interactions=successful,
             failed_interactions=failed,
             avg_latency_ms=avg_latency,
@@ -247,7 +255,7 @@ class TrustCalculator:
     
     def update_score_incremental(
         self, 
-        current: TrustScore, 
+        current: TrustScore,
         event: TrustEvent
     ) -> TrustScore:
         """Update a trust score incrementally with a new event."""
@@ -259,3 +267,12 @@ class TrustCalculator:
         # Add synthetic events to match current score
         # This is a simplified approach
         return self.calculate_from_ledger(ledger)
+    
+    def calculate(self, agent_did: str, store: Optional['TrustStore'] = None) -> TrustScore:
+        """Calculate trust score for an agent."""
+        # Use provided store or the one set on the calculator
+        effective_store = store or self.store
+        if effective_store is not None:
+            ledger = effective_store.get_ledger(agent_did)
+            return self.calculate_from_ledger(ledger)
+        return TrustScore(agent_did=agent_did, overall_score=self.default_score)
