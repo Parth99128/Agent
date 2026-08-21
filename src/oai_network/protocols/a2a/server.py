@@ -77,7 +77,7 @@ class A2AServer:
         async def health():
             return {"status": "healthy", "agent": self.identity.did}
 
-        @app.get("/.well-known/agent-card")
+        @app.get("/.well-known/agent-card.json")
         async def agent_card():
             return {
                 "agent_did": self.identity.did,

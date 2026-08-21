@@ -58,7 +58,7 @@ class SummarizerAgent:
         async def health():
             return {"status": "healthy", "agent": self.name}
         
-        @self.app.get("/agent-card")
+        @self.app.get("/.well-known/agent-card.json")
         async def agent_card():
             """Return agent manifest (A2A Agent Card)."""
             if self.manifest:
