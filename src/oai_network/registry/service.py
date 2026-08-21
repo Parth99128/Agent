@@ -23,6 +23,7 @@ from .models import (
     DiscoveryAgentResult,
 )
 from ..core.capabilities.models import AgentManifest
+from ..core.routing import QueryClassifier, create_default_classifier
 
 
 class RegistryService:
@@ -35,13 +36,20 @@ class RegistryService:
     - Capability-based discovery
     - Automatic stale entry cleanup
     - Registry statistics
+    - Local AI routing for query classification (Stage 7)
     """
 
-    def __init__(self, config: Optional[RegistryConfig] = None):
+    def __init__(
+        self,
+        config: Optional[RegistryConfig] = None,
+        classifier: Optional[QueryClassifier] = None,
+    ):
         self.config = config or RegistryConfig()
         # In-memory registry: agent_did -> RegistryEntry
         self._registry: Dict[str, RegistryEntry] = {}
         self._running = False
+        # Local AI classifier for query routing
+        self._classifier = classifier or create_default_classifier()
 
     async def start(self):
         """Start background tasks."""
@@ -270,6 +278,10 @@ class RegistryService:
             verified_only = query.verified_only
             tags = query.tags
         
+        # If natural language query provided, use LLM classifier to determine capability
+        if nl_query and not capability:
+            capability = self._classifier.classify(nl_query)
+        
         results = []
         for entry in self._registry.values():
             if entry.status in ("inactive", "expired"):
@@ -324,7 +336,6 @@ class RegistryService:
         results.sort(key=lambda r: (r.relevance_score, r.trust_score), reverse=True)
         
         return results[:max_results]
-        return results
 
     async def cleanup_expired(self) -> int:
         """

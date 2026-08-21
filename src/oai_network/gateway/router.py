@@ -249,3 +249,35 @@ class GatewayRouter:
             "middlewares": len(self.middlewares),
             "policy_rules": len(self.policy_engine.policy.rules) if self.policy_engine else 0,
         }
+    
+    def list_routes(self) -> list:
+        """List all routes."""
+        return [
+            {
+                "id": r.id,
+                "name": r.name,
+                "path_pattern": r.path_pattern,
+                "methods": r.methods,
+                "target_url": r.target_url,
+                "required_capability": r.required_capability,
+                "enabled": r.enabled,
+                "priority": r.priority,
+            }
+            for r in self.routes
+        ]
+    
+    def list_upstreams(self) -> dict:
+        """List all upstreams grouped by route."""
+        result = {}
+        for route_id, services in self.upstreams.items():
+            result[route_id] = [
+                {
+                    "id": s.id,
+                    "name": s.name,
+                    "url": s.url,
+                    "weight": s.weight,
+                    "healthy": s.healthy,
+                }
+                for s in services
+            ]
+        return result

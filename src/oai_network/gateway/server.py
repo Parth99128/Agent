@@ -65,7 +65,7 @@ async def route_request(
 ):
     """Route a request through the gateway with policy enforcement."""
     try:
-        response = await gateway.route(request)
+        response = gateway.route(request)
         return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -113,7 +113,7 @@ async def add_route(
     """Add a route rule."""
     try:
         gateway.add_route(route)
-        return {"success": True, "route_id": route.route_id}
+        return {"success": True, "route_id": route.id}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -128,13 +128,14 @@ async def list_routes(
 
 @app.post("/upstreams")
 async def add_upstream(
+    route_id: str,
     upstream: UpstreamService,
     gateway: GatewayRouter = Depends(get_gateway),
 ):
-    """Add an upstream service."""
+    """Add an upstream service for a route."""
     try:
-        gateway.add_upstream(upstream)
-        return {"success": True, "upstream_id": upstream.upstream_id}
+        gateway.add_upstream(route_id, upstream)
+        return {"success": True, "upstream_id": upstream.id}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
