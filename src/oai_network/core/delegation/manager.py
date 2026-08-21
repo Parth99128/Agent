@@ -122,6 +122,20 @@ class DelegationManager:
         task.completed_at = datetime.now(timezone.utc)
         task.progress = 1.0
 
+        # Record trust event for successful interaction
+        if self.trust_store:
+            from ..trust.models import TrustEvent, TrustEventType
+            event = TrustEvent(
+                event_type=TrustEventType.INTERACTION_SUCCESS,
+                source_did=task.delegator_did,
+                target_did=task.delegatee_did,
+                interaction_id=task_id,
+                capability_name=task.capability,
+                latency_ms=elapsed_ms,
+                weight=1.0,
+            )
+            self.trust_store.add_event(event)
+
         return DelegationResult(
             task_id=task_id,
             status=DelegationStatus.COMPLETED,
@@ -145,6 +159,46 @@ class DelegationManager:
         task.status = DelegationStatus.FAILED
         task.completed_at = datetime.now(timezone.utc)
         task.last_error = "Task cancelled"
+
+        # Record trust event for failed interaction
+        if self.trust_store:
+            from ..trust.models import TrustEvent, TrustEventType
+            event = TrustEvent(
+                event_type=TrustEventType.INTERACTION_FAILURE,
+                source_did=task.delegator_did,
+                target_did=task.delegatee_did,
+                interaction_id=task_id,
+                capability_name=task.capability,
+                weight=1.0,
+            )
+            self.trust_store.add_event(event)
+
+        return True
+
+    async def record_task_failure(self, task_id: str, error: str, timeout: bool = False) -> bool:
+        """Record a task failure for trust tracking."""
+        task = self.tasks.get(task_id)
+        if not task:
+            return False
+
+        task.status = DelegationStatus.FAILED
+        task.completed_at = datetime.now(timezone.utc)
+        task.last_error = error
+
+        # Record trust event for failed interaction
+        if self.trust_store:
+            from ..trust.models import TrustEvent, TrustEventType
+            event_type = TrustEventType.INTERACTION_TIMEOUT if timeout else TrustEventType.INTERACTION_FAILURE
+            event = TrustEvent(
+                event_type=event_type,
+                source_did=task.delegator_did,
+                target_did=task.delegatee_did,
+                interaction_id=task_id,
+                capability_name=task.capability,
+                weight=1.0,
+            )
+            self.trust_store.add_event(event)
+
         return True
 
     async def create_chain(

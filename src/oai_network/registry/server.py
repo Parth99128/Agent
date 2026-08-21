@@ -118,6 +118,32 @@ async def get_agent(
     return entry
 
 
+@app.get("/agents/{agent_did}/trust-history")
+async def get_trust_history(
+    agent_did: str,
+    limit: int = 100,
+    offset: int = 0,
+    registry: RegistryService = Depends(get_registry),
+):
+    """Get trust history for an agent."""
+    entry = await registry.get_agent(agent_did)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    
+    # Get trust events from trust store
+    from ..core.trust.store import TrustStore
+    trust_store = TrustStore()
+    events = trust_store.get_events_for_agent(agent_did, limit=limit, offset=offset)
+    
+    return {
+        "agent_did": agent_did,
+        "events": [e.model_dump(mode='json') for e in events],
+        "total": len(events),
+        "limit": limit,
+        "offset": offset,
+    }
+
+
 @app.post("/discover", response_model=DiscoveryResponse)
 async def discover_agents(
     query: DiscoveryQuery,

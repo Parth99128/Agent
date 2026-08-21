@@ -125,6 +125,17 @@ class TrustCalculator:
             recency_factor = max(0.1, 0.5 ** (days_since / self.half_life_days))
         confidence = (volume_factor + recency_factor) / 2
         
+        # Wilson score interval for minimum sample size guard
+        # This prevents agents with few interactions from outranking those with many
+        if total_interactions > 0:
+            import math
+            z = 1.96  # 95% confidence
+            p = successful / total_interactions
+            n = total_interactions
+            wilson_lower = (p + z*z/(2*n) - z*math.sqrt((p*(1-p) + z*z/(4*n))/n)) / (1 + z*z/n)
+            # Blend Wilson lower bound with overall score based on confidence
+            overall = overall * confidence + wilson_lower * (1 - confidence)
+        
         return TrustScore(
             agent_did=ledger.agent_did,
             overall_score=max(0.0, min(1.0, overall)),

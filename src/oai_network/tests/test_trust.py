@@ -313,3 +313,70 @@ class TestTrustStore:
         # Get second page
         events = await trust_store.get_events_for_agent(agent_did, limit=10, offset=10)
         assert len(events) == 5
+
+
+class TestTrustCalculatorAdvanced:
+    """Advanced tests for TrustCalculator."""
+    
+    def test_wilson_score_interval(self, trust_calculator, trust_store):
+        """Test Wilson score interval prevents low-volume agents from outranking high-volume ones."""
+        # Agent with 2/2 successes (100% but low volume)
+        agent_low_volume = "did:oai:lowvolume"
+        for i in range(2):
+            event = TrustEvent(
+                event_type=TrustEventType.INTERACTION_SUCCESS,
+                source_did="did:oai:source",
+                target_did=agent_low_volume,
+                weight=1.0
+            )
+            trust_store.add_event(event)
+        
+        # Agent with 200/210 successes (95% but high volume)
+        agent_high_volume = "did:oai:highvolume"
+        for i in range(200):
+            event = TrustEvent(
+                event_type=TrustEventType.INTERACTION_SUCCESS,
+                source_did="did:oai:source",
+                target_did=agent_high_volume,
+                weight=1.0
+            )
+            trust_store.add_event(event)
+        for i in range(10):
+            event = TrustEvent(
+                event_type=TrustEventType.INTERACTION_FAILURE,
+                source_did="did:oai:source",
+                target_did=agent_high_volume,
+                weight=1.0
+            )
+            trust_store.add_event(event)
+        
+        score_low = trust_calculator.calculate(agent_low_volume)
+        score_high = trust_calculator.calculate(agent_high_volume)
+        
+        # High volume agent should have higher or equal trust despite lower success rate
+        # because of Wilson score interval
+        assert score_high.overall_score >= score_low.overall_score
+    
+    def test_trust_decay_inactive_agent(self, trust_calculator, trust_store):
+        """Test trust decays for inactive agents."""
+        from datetime import datetime, timezone, timedelta
+        
+        agent_did = "did:oai:inactive"
+        
+        # Add old successful events
+        for i in range(10):
+            event = TrustEvent(
+                event_type=TrustEventType.INTERACTION_SUCCESS,
+                source_did="did:oai:source",
+                target_did=agent_did,
+                weight=1.0,
+                timestamp=datetime.now(timezone.utc) - timedelta(days=60)
+            )
+            trust_store.add_event(event)
+        
+        score = trust_calculator.calculate(agent_did)
+        
+        # Confidence should be low due to recency
+        assert score.confidence < 0.5
+        # Overall score should be pulled toward default due to low confidence
+        assert score.overall_score < 0.8

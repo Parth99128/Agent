@@ -148,6 +148,26 @@ async def list_upstreams(
     return {"upstreams": gateway.list_upstreams()}
 
 
+@app.get("/agents/{agent_did}/trust-history")
+async def get_trust_history(
+    agent_did: str,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """Get trust history for an agent."""
+    from ..core.trust.store import TrustStore
+    trust_store = TrustStore()
+    events = trust_store.get_events_for_agent(agent_did, limit=limit, offset=offset)
+    
+    return {
+        "agent_did": agent_did,
+        "events": [e.model_dump(mode='json') for e in events],
+        "total": len(events),
+        "limit": limit,
+        "offset": offset,
+    }
+
+
 def main():
     """Run the gateway server."""
     logging.basicConfig(level=logging.INFO)
