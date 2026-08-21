@@ -108,6 +108,35 @@ class HeartbeatResponse(BaseModel):
     error: Optional[str] = None
 
 
+class DiscoveryAgentResult(BaseModel):
+    """Agent result in discovery response."""
+    agent_did: str = Field(..., description="Agent DID")
+    agent_name: str = Field(..., description="Agent name")
+    agent_description: str = Field(default="", description="Agent description")
+    capability_name: str = Field(default="", description="Matched capability name")
+    trust_score: float = Field(default=0.0, description="Trust score")
+    verified: bool = Field(default=False, description="Whether agent is verified")
+    capabilities: list[str] = Field(default_factory=list, description="Capability names")
+    endpoints: list[str] = Field(default_factory=list, description="Endpoint URLs")
+    tags: list[str] = Field(default_factory=list, description="Tags")
+    relevance_score: float = Field(default=0.0, description="Semantic relevance score (0-1)")
+
+
+class DiscoveryQuery(BaseModel):
+    """Query for discovering agents."""
+    capability: str = Field(..., description="Capability name to search for")
+    max_results: int = Field(default=10, description="Maximum number of results")
+    min_trust_score: float = Field(default=0.0, description="Minimum trust score")
+    verified_only: bool = Field(default=False, description="Only return verified agents")
+    tags: list[str] = Field(default_factory=list, description="Filter by tags")
+
+
+class DiscoveryResponse(BaseModel):
+    """Response from discovery query."""
+    agents: list[DiscoveryAgentResult] = Field(default_factory=list)
+    total: int = Field(default=0, description="Total matching agents")
+
+
 class RegistryConfig(BaseModel):
     """Registry configuration."""
     host: str = Field(default="0.0.0.0", description="Bind host")

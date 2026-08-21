@@ -1,0 +1,22 @@
+{
+  "identity": {
+    "did": "did:oai:719cbf3ad7c1281895a00695c52e509a",
+    "public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEARvWVX+LouamRdb8XIpLCeax/uyGYrr6YwD2aJmYddhA=\n-----END PUBLIC KEY-----\n",
+    "key_type": "ed25519",
+    "created_at": "2026-08-21T11:24:37.344226Z",
+    "metadata": {
+      "name": "Code Analyzer Agent"
+    }
+  },
+  "proof": {
+    "identity_did": "did:oai:719cbf3ad7c1281895a00695c52e509a",
+    "challenge": "9fab8e3bc2bbecf4eb8251ea90a2d432f3d86d6af43e9393285ac42c990fd62e",
+    "signature": "0ffa1b52b35986261e28d5d24be28282cc4ce7dd1a19c23b766324be446eb68c2fcd7bcedc9cc28809ca370511027d8c93c543ac245d7bfcc34bd67453681c0a",
+    "key_type": "ed25519",
+    "timestamp": "2026-08-21T11:24:37.344525Z",
+    "expires_at": null
+  },
+  "verified": false,
+  "verified_at": null,
+  "document_id": "doc-1787311477.344541"
+}

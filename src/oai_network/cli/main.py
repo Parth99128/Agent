@@ -222,6 +222,42 @@ def find_agent(query: str, registry_url: str, capability: Optional[str], capabil
     asyncio.run(_find())
 
 
+@cli.command('find-agent')
+@click.option('--query', required=True, help='Natural language query (e.g., "analyze python repository")')
+@click.option('--registry', 'registry_url', default='http://localhost:8081', help='Registry URL')
+@click.option('--min-trust', type=float, default=0.0, help='Minimum trust score')
+@click.option('--verified-only', is_flag=True, help='Only verified agents')
+def find_agent(query: str, registry_url: str, min_trust: float, verified_only: bool):
+    """Find agents matching a natural language query (main entry point)"""
+    async def _find():
+        async with OAIClient(registry_url=registry_url) as client:
+            click.echo(f"Finding agents for: {query}...")
+            try:
+                results = await client.find_agent(query=query)
+                
+                # Filter by trust score and verification
+                filtered = [r for r in results if r.trust_score >= min_trust]
+                if verified_only:
+                    filtered = [r for r in filtered if r.verified]
+                
+                if not filtered:
+                    click.echo("No agents found")
+                    return
+                
+                for i, result in enumerate(filtered, 1):
+                    click.echo(f"\n{i}. {result.agent_name} ({result.agent_did})")
+                    click.echo(f"   Description: {result.agent_description}")
+                    click.echo(f"   Capability: {result.capability_name}")
+                    click.echo(f"   Trust Score: {result.trust_score:.2f}")
+                    click.echo(f"   Verified: {'Yes' if result.verified else 'No'}")
+                    if result.endpoint_url:
+                        click.echo(f"   Endpoint: {result.endpoint_url}")
+            except Exception as e:
+                click.echo(f"Discovery failed: {e}")
+    
+    asyncio.run(_find())
+
+
 @discover.command()
 @click.option('--did', 'agent_did', required=True, help='Agent DID')
 @click.option('--registry', 'registry_url', default='http://localhost:8081', help='Registry URL')

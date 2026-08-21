@@ -1,0 +1,22 @@
+{
+  "identity": {
+    "did": "did:oai:6eda55d44f6799d82387b7aec87415f5",
+    "public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAJC+MkEKbc09uxAaCrASTSfhztJ3M0e2euKXHsAUurN8=\n-----END PUBLIC KEY-----\n",
+    "key_type": "ed25519",
+    "created_at": "2026-08-21T10:28:36.260867Z",
+    "metadata": {
+      "name": "Summarizer Agent"
+    }
+  },
+  "proof": {
+    "identity_did": "did:oai:6eda55d44f6799d82387b7aec87415f5",
+    "challenge": "b32232c97aa1e52ac96d58bfd48b616298232bac7616b9eb00a0984d9af266d5",
+    "signature": "671888fd881ea5b80112af86dc9a470ea78d0bbff50f8dc6b2624cc393ff01ccdadbfb2c2302d57723b974d83797034b382cde173be0d789ec1c7d08fc0b9c0b",
+    "key_type": "ed25519",
+    "timestamp": "2026-08-21T10:28:36.261280Z",
+    "expires_at": null
+  },
+  "verified": false,
+  "verified_at": null,
+  "document_id": "doc-1787308116.261302"
+}

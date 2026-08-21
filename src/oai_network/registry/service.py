@@ -18,17 +18,11 @@ from .models import (
     HeartbeatResponse,
     HealthStatus,
     RegistryConfig,
+    DiscoveryQuery,
+    DiscoveryResponse,
+    DiscoveryAgentResult,
 )
 from ..core.capabilities.models import AgentManifest
-from pydantic import BaseModel as PydanticModel
-
-
-class DiscoveryAgentResult(PydanticModel):
-    """Result from discover_agents."""
-    agent_did: str
-    capability_name: str
-    agent_name: str = ""
-    trust_score: float = 0.0
 
 
 class RegistryService:
@@ -245,34 +239,91 @@ class RegistryService:
 
     async def discover_agents(
         self,
-        capability: str,
+        query: Optional[DiscoveryQuery] = None,
+        capability: Optional[str] = None,
         max_results: int = 10,
-    ) -> List[DiscoveryAgentResult]:
+        min_trust_score: float = 0.0,
+        verified_only: bool = False,
+        tags: Optional[list[str]] = None,
+        nl_query: Optional[str] = None,
+    ) -> list[DiscoveryAgentResult]:
         """
-        Discover agents by capability.
+        Discover agents by capability or natural language query.
 
         Args:
-            capability: Capability name to search for
+            query: DiscoveryQuery with capability and filters (new style)
+            capability: Capability name to search for (legacy style)
             max_results: Maximum number of results
+            min_trust_score: Minimum trust score
+            verified_only: Only return verified agents
+            tags: Filter by tags
+            nl_query: Natural language query for semantic matching
 
         Returns:
-            List of DiscoveryAgentResult objects
+            List of DiscoveryAgentResult objects sorted by relevance
         """
+        # Support both new DiscoveryQuery object and legacy keyword arguments
+        if query is not None:
+            capability = query.capability
+            max_results = query.max_results
+            min_trust_score = query.min_trust_score
+            verified_only = query.verified_only
+            tags = query.tags
+        
         results = []
         for entry in self._registry.values():
             if entry.status in ("inactive", "expired"):
                 continue
             if entry.is_expired():
                 continue
-            if capability in entry.capabilities:
+            if entry.trust_score < min_trust_score:
+                continue
+            if verified_only and not entry.identity_verified:
+                continue
+            if tags and not any(tag in entry.tags for tag in tags):
+                continue
+            
+            # If natural language query provided, use semantic matching
+            best_match_score = 0.0
+            best_capability = capability
+            
+            if nl_query and entry.manifest:
+                # Use capability's matches_query method for semantic matching
+                for cap in entry.manifest.capabilities:
+                    score = cap.matches_query(nl_query)
+                    if score > best_match_score:
+                        best_match_score = score
+                        best_capability = cap.name
+            
+            # If no NL query, require exact capability match
+            if not nl_query and capability:
+                if capability not in entry.capabilities:
+                    continue
+                best_match_score = 1.0
+                best_capability = capability
+            elif not nl_query and not capability:
+                # No filter - return all
+                best_match_score = 1.0
+                best_capability = entry.capabilities[0] if entry.capabilities else ""
+            
+            if best_match_score > 0:
                 results.append(DiscoveryAgentResult(
                     agent_did=entry.agent_did,
-                    capability_name=capability,
                     agent_name=entry.name,
+                    agent_description=entry.description,
+                    capability_name=best_capability,
                     trust_score=entry.trust_score,
+                    verified=entry.identity_verified,
+                    capabilities=entry.capabilities,
+                    endpoints=entry.endpoints,
+                    tags=entry.tags,
+                    relevance_score=best_match_score,
                 ))
-                if len(results) >= max_results:
-                    break
+        
+        # Sort by relevance score (descending) then trust score (descending)
+        results.sort(key=lambda r: (r.relevance_score, r.trust_score), reverse=True)
+        
+        return results[:max_results]
         return results
 
     async def cleanup_expired(self) -> int:

@@ -171,19 +171,10 @@ class OAIClient:
         if not self._http_client:
             self._http_client = httpx.AsyncClient(timeout=self.timeout)
         
+        # Send manifest as JSON string as expected by registry
         payload = {
-            "agent_did": manifest.identity.did,
-            "name": manifest.name,
-            "description": manifest.description,
-            "version": manifest.version,
-            "endpoints": [e.url for e in manifest.endpoints],
-            "protocols": list(set(e.protocol for e in manifest.endpoints)),
-            "capabilities": [c.name for c in manifest.capabilities],
-            "capability_details": {c.name: c.model_dump() for c in manifest.capabilities},
-            "public_key": manifest.identity.public_key,
-            "identity_proof": identity_proof,
-            "metadata": manifest.metadata,
-            "tags": manifest.tags,
+            "manifest": manifest.model_dump(mode='json'),
+            "ttl_seconds": 86400,
         }
         
         response = await self._http_client.post(
@@ -242,24 +233,41 @@ class OAIClient:
         if not self._http_client:
             self._http_client = httpx.AsyncClient(timeout=self.timeout)
         
-        params = {
-            "query": query,
-            "capability": capability,
-            "capability_type": capability_type,
-            "tags": tags or [],
+        # Use POST with JSON body as expected by registry
+        payload = {
+            "capability": capability or query or "general",
+            "max_results": max_results,
             "min_trust_score": min_trust_score,
             "verified_only": verified_only,
-            "limit": max_results,
+            "tags": tags or [],
         }
         
-        response = await self._http_client.get(
+        response = await self._http_client.post(
             f"{self.registry_url}/discover",
-            params=params,
+            json=payload,
         )
         response.raise_for_status()
         data = response.json()
         
-        return [DiscoveryResult(**item) for item in data.get("results", [])]
+        # Map registry DiscoveryAgentResult to SDK DiscoveryResult
+        results = []
+        for item in data.get("agents", []):
+            results.append(DiscoveryResult(
+                agent_did=item.get("agent_did", ""),
+                agent_name=item.get("agent_name", ""),
+                agent_description=item.get("agent_description", ""),
+                capability_name=item.get("capabilities", [""])[0] if item.get("capabilities") else "",
+                capability_type="",
+                relevance_score=0.8,  # Default relevance
+                trust_score=item.get("trust_score", 0.0),
+                estimated_latency_ms=None,
+                price_per_unit=None,
+                currency="USD",
+                endpoint_url=item.get("endpoints", [""])[0] if item.get("endpoints") else "",
+                tags=item.get("tags", []),
+                verified=item.get("verified", False),
+            ))
+        return results
     
     async def discover_agents(
         self,

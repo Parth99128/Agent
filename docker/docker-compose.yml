@@ -1,0 +1,109 @@
+version: '3.8'
+
+services:
+  # PostgreSQL for persistent registry (optional - can use SQLite for dev)
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: oai_network
+      POSTGRES_USER: oai
+      POSTGRES_PASSWORD: oai
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oai -d oai_network"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching/sessions (optional)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Registry Service
+  registry:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.registry
+    ports:
+      - "8081:8081"
+    environment:
+      - REGISTRY_DATABASE_URL=postgresql://oai:oai@postgres:5432/oai_network
+      - REGISTRY_HOST=0.0.0.0
+      - REGISTRY_PORT=8081
+      - PYTHONPATH=/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ../src:/app/src
+    command: python -m oai_network.registry.server
+
+  # Gateway Service
+  gateway:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gateway
+    ports:
+      - "8080:8080"
+    environment:
+      - GATEWAY_HOST=0.0.0.0
+      - GATEWAY_PORT=8080
+      - REGISTRY_URL=http://registry:8081
+      - PYTHONPATH=/app
+    depends_on:
+      - registry
+    volumes:
+      - ../src:/app/src
+    command: python -m oai_network.gateway.server
+
+  # Translator Agent
+  translator:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.agent
+    ports:
+      - "8001:8001"
+    environment:
+      - AGENT_NAME=Translator Agent
+      - AGENT_PORT=8001
+      - REGISTRY_URL=http://registry:8081
+      - PYTHONPATH=/app
+    depends_on:
+      - registry
+    volumes:
+      - ../src:/app/src
+    command: python -m oai_network.examples.translator_agent
+
+  # Summarizer Agent
+  summarizer:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.agent
+    ports:
+      - "8002:8002"
+    environment:
+      - AGENT_NAME=Summarizer Agent
+      - AGENT_PORT=8002
+      - REGISTRY_URL=http://registry:8081
+      - PYTHONPATH=/app
+    depends_on:
+      - registry
+    volumes:
+      - ../src:/app/src
+    command: python -m oai_network.examples.summarizer_agent
+
+volumes:
+  postgres_data:
+  redis_data:
