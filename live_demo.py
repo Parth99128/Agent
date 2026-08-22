@@ -167,7 +167,7 @@ class LiveDemo:
                     "id": "demo-1",
                     "method": "analyze",
                     "params": {
-                        "path": "/workspaces/Agent/src/oai_network",
+                        "path": "/app/src/oai_network",
                         "tools": ["bandit", "pylint"]
                     }
                 }
@@ -218,28 +218,49 @@ class LiveDemo:
                 route_resp = await client.post(
                     "http://localhost:8080/routes",
                     json={
-                        "id": "code-analysis-route",
-                        "path": "/analyze",
-                        "upstream": "http://localhost:8003",
+                        "name": "code-analysis-route",
+                        "path_pattern": "/analyze",
+                        "target_url": "http://localhost:8003",
                         "methods": ["POST"]
                     }
                 )
                 print(f"   Route added: {route_resp.status_code}")
+                route_data = route_resp.json()
+                route_id = route_data.get("route_id")
+                print(f"   Route ID: {route_id}")
                 
-                # Now route through gateway
+                # Add upstream for the route
+                upstream_resp = await client.post(
+                    f"http://localhost:8080/upstreams?route_id={route_id}",
+                    json={
+                        "id": "code-analysis-upstream",
+                        "name": "Code Analysis Agent",
+                        "url": "http://localhost:8003",
+                        "weight": 100
+                    }
+                )
+                print(f"   Upstream added: {upstream_resp.status_code}")
+                
+                # Now route through gateway - send GatewayRequest format
                 route_request = {
-                    "jsonrpc": "2.0",
-                    "id": "demo-3",
-                    "method": "analyze",
-                    "params": {"path": "/workspaces/Agent/src/oai_network/core"}
+                    "method": "POST",
+                    "path": "/analyze",
+                    "headers": {"Content-Type": "application/json"},
+                    "body": {
+                        "jsonrpc": "2.0",
+                        "id": "demo-3",
+                        "method": "analyze",
+                        "params": {"path": "/app/src/oai_network/core"}
+                    }
                 }
                 
                 resp = await client.post(
                     "http://localhost:8080/route",
-                    json={"target": "code-analysis-route", "payload": route_request}
+                    json=route_request
                 )
                 result = resp.json()
-                print(f"   Gateway routed result: {'✅ Success' if 'result' in result else '❌ Failed'}")
+                print(f"   Gateway routed result: {'✅ Success' if result.get('status_code') == 200 else '❌ Failed'}")
+                print(f"   Response: {result}")
             
             # 9. Test CLI Commands
             print("\n💻 Testing CLI Commands...")

@@ -81,27 +81,27 @@ async def route_request(
 ):
     """Route a request through the gateway with policy enforcement."""
     trace_id = getattr(request.state, "trace_id", "no-trace")
-    log_request(logger, "POST", "/route", trace_id, target=gw_request.target)
+    log_request(logger, "POST", "/route", trace_id, target=gw_request.path)
     
     try:
         response = gateway.route(gw_request)
         
         # Log policy check result
-        log_policy_check(logger, "routing", True, trace_id, target=gw_request.target)
+        log_policy_check(logger, "routing", True, trace_id, target=gw_request.path)
         
         # Record delegation metric
         record_delegation("gateway", "success")
         
-        log_response(logger, "POST", "/route", 200, 0, trace_id, target=gw_request.target)
+        log_response(logger, "POST", "/route", 200, 0, trace_id, target=gw_request.path)
         return response
     except Exception as e:
         # Check if it's a policy denial
         if "policy" in str(e).lower() or "denied" in str(e).lower():
             record_policy_denial("gateway", "policy_violation")
-            log_policy_check(logger, "routing", False, trace_id, target=gw_request.target, error=str(e))
+            log_policy_check(logger, "routing", False, trace_id, target=gw_request.path, error=str(e))
         else:
             record_delegation("gateway", "error")
-            log_error(logger, "Routing failed", trace_id, error=e, target=gw_request.target)
+            log_error(logger, "Routing failed", trace_id, error=e, target=gw_request.path)
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -80,9 +80,9 @@ class CodeAnalysisAgent:
             return {"error": "Not initialized"}
         
         @self.app.get("/metrics")
-        async def metrics():
+        async def metrics(request: Request):
             """Prometheus metrics endpoint."""
-            return await metrics_endpoint()
+            return await metrics_endpoint(request)
         
         @self.app.post("/a2a")
         async def a2a_endpoint(request: Request):
@@ -395,25 +395,49 @@ class CodeAnalysisAgent:
         logger.info(f"Created manifest with {len(self.manifest.capabilities)} capabilities")
         return self.manifest
     
-    async def register_with_registry(self, registry_url: str = "http://localhost:8081"):
-        """Register with the OAI Network registry."""
+    async def register_with_registry(self, registry_url: str = None, max_retries: int = 10, base_delay: float = 2.0):
+        """Register with the OAI Network registry with retry logic."""
+        if registry_url is None:
+            import os
+            registry_url = os.environ.get("REGISTRY_URL", "http://localhost:8081")
         if not self.manifest:
             self.create_manifest(registry_url)
         
-        async with OAIClient(registry_url=registry_url, identity=self.identity.identity) as client:
-            result = await client.register_agent(self.manifest)
-            logger.info(f"Registered with registry: {result}")
-            return result
-    
-    async def start_heartbeat(self, registry_url: str = "http://localhost:8081", interval: int = 60):
-        """Send periodic heartbeats."""
-        while True:
+        for attempt in range(max_retries):
             try:
                 async with OAIClient(registry_url=registry_url, identity=self.identity.identity) as client:
-                    await client.heartbeat()
-                    logger.debug(f"Heartbeat sent for {self.identity.identity.did}")
+                    result = await client.register_agent(self.manifest)
+                    logger.info(f"Registered with registry: {result}")
+                    return result
             except Exception as e:
-                logger.warning(f"Heartbeat failed: {e}")
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)  # Exponential backoff
+                    logger.warning(f"Registration attempt {attempt + 1}/{max_retries} failed: {e}. Retrying in {delay}s...")
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(f"Registration failed after {max_retries} attempts: {e}")
+                    raise
+    
+    async def start_heartbeat(self, registry_url: str = None, interval: int = 60, max_retries: int = 5, base_delay: float = 2.0):
+        """Send periodic heartbeats with retry logic."""
+        if registry_url is None:
+            import os
+            registry_url = os.environ.get("REGISTRY_URL", "http://localhost:8081")
+        
+        while True:
+            for attempt in range(max_retries):
+                try:
+                    async with OAIClient(registry_url=registry_url, identity=self.identity.identity) as client:
+                        await client.heartbeat()
+                        logger.debug(f"Heartbeat sent for {self.identity.identity.did}")
+                        break  # Success, exit retry loop
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)
+                        logger.warning(f"Heartbeat attempt {attempt + 1}/{max_retries} failed: {e}. Retrying in {delay}s...")
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.error(f"Heartbeat failed after {max_retries} attempts: {e}")
             await asyncio.sleep(interval)
     
     async def run_async(self):

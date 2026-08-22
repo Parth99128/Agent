@@ -8,12 +8,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install
+# Copy source code first (needed for editable install)
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir -e .
-
-# Copy source code
 COPY src/ ./src/
+
+# Install package with all optional dependencies
+RUN pip install --no-cache-dir -e ".[all]"
 
 EXPOSE 8080
 

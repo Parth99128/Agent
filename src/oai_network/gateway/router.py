@@ -169,10 +169,21 @@ class GatewayRouter:
     
     def _select_upstream(self, route: RouteRule) -> Optional[UpstreamService]:
         """Select an upstream service using load balancing."""
+        import logging
+        logger = logging.getLogger("oai-network-gateway")
+        
+        logger.info(f"_select_upstream called for route.id={route.id}, route.name={route.name}")
+        logger.info(f"Available upstreams keys: {list(self.upstreams.keys())}")
+        
         # Check static upstreams first
         if route.id in self.upstreams and self.upstreams[route.id]:
             services = self.upstreams[route.id]
+            logger.info(f"Found {len(services)} upstreams for route {route.id}")
+            for s in services:
+                logger.info(f"  Upstream: id={s.id}, name={s.name}, url={s.url}, healthy={s.healthy}, last_health_check={s.last_health_check}, is_healthy={s.is_healthy()}")
             return self._load_balance(services, route.load_balancer)
+        else:
+            logger.warning(f"No upstreams found for route.id={route.id}")
         
         # Fall back to discovery if configured
         if self.discovery and route.required_capability:
