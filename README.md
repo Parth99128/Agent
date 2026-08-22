@@ -38,10 +38,13 @@ OAI Network is a framework for building interoperable AI agent ecosystems. It pr
 git clone https://github.com/Parth99128/Agent.git
 cd Agent
 
-# Install with all optional dependencies
+# Install with all optional dependencies (includes httpx for live demo)
 pip install -e ".[all]"
 
-# Or install minimal dependencies
+# Or install minimal dependencies + demo requirements
+pip install -e ".[demo]"
+
+# Or install minimal dependencies only
 pip install -e .
 ```
 
@@ -50,6 +53,9 @@ pip install -e .
 ```bash
 # Start all services: registry, gateway, agents, Prometheus, Grafana
 docker-compose up -d
+
+# Wait for services to be healthy (30-60 seconds)
+sleep 30
 
 # Verify services are healthy
 curl http://localhost:8081/health  # Registry
@@ -62,7 +68,7 @@ curl http://localhost:8003/health  # Code Analysis Agent
 ### Run the Live Demo
 
 ```bash
-# With Docker stack running
+# With Docker stack running (services on localhost ports)
 python live_demo.py
 ```
 
@@ -73,6 +79,8 @@ The demo shows:
 4. A2A protocol communication
 5. CLI-based discovery
 6. Agent Card endpoint (A2A interoperability)
+
+> **Note:** The live demo runs on the host and requires `httpx`. Install with `pip install -e ".[demo]"` or `pip install -e ".[all]"` before running.
 
 ---
 

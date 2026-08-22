@@ -28,7 +28,8 @@ import httpx
 class LiveDemo:
     def __init__(self):
         self.processes = []
-        self.base_dir = Path("/workspaces/Agent")
+        # Use current working directory instead of hardcoded path
+        self.base_dir = Path.cwd()
         os.chdir(self.base_dir)
     
     def start_process(self, name: str, cmd: list, port: int, health_path: str = "/health"):
