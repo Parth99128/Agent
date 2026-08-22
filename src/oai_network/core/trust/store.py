@@ -11,6 +11,9 @@ from typing import Optional, List
 from threading import Lock
 
 from .models import TrustEvent, TrustScore, Feedback, ReputationLedger, TrustEventType
+from oai_network.core.observability import (
+    get_logger, log_agent_action, log_error, get_trace_id
+)
 
 
 class _AwaitableResult:
@@ -62,6 +65,7 @@ class TrustStore:
         # Use a single persistent connection so :memory: databases persist across queries
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self.logger = get_logger("oai-network-trust-store")
         self._init_db()
 
     def _init_db(self):
@@ -219,9 +223,15 @@ class TrustStore:
 
     def _add_event_sync(self, event: TrustEvent):
         """Synchronously add a trust event to the ledger."""
+        trace_id = get_trace_id()
         conn = self._conn
         agent_did = event.target_did
         event_type_value = self._event_type_value(event.event_type)
+        
+        log_agent_action(self.logger, "add_trust_event", agent_did, trace_id,
+                        event_type=event_type_value,
+                        interaction_id=event.interaction_id)
+        
         conn.execute(
             """
             INSERT INTO trust_events (
@@ -250,6 +260,9 @@ class TrustStore:
             ),
         )
         conn.commit()
+        
+        log_agent_action(self.logger, "add_trust_event_complete", agent_did, trace_id,
+                        event_id=event.id)
 
     def _get_events_sync(self, agent_did: str, limit: int = 10, offset: int = 0) -> List[TrustEvent]:
         """Synchronously get events for an agent with pagination."""
@@ -327,7 +340,11 @@ class TrustStore:
 
     def get_ledger(self, agent_did: str, since: Optional[datetime] = None) -> ReputationLedger:
         """Get reputation ledger for an agent (synchronous, used by calculator)."""
+        trace_id = get_trace_id()
         conn = self._conn
+        
+        log_agent_action(self.logger, "get_ledger", agent_did, trace_id)
+        
         if since:
             cursor = conn.execute(
                 """
@@ -348,11 +365,20 @@ class TrustStore:
             )
         rows = cursor.fetchall()
         events = [self._row_to_event(row) for row in rows]
+        
+        log_agent_action(self.logger, "get_ledger_complete", agent_did, trace_id,
+                        events_count=len(events))
+        
         return ReputationLedger(agent_did=agent_did, events=events)
 
     def save_score(self, score: TrustScore):
         """Save or update a trust score."""
+        trace_id = get_trace_id()
         conn = self._conn
+        
+        log_agent_action(self.logger, "save_trust_score", agent_did, trace_id,
+                        overall_score=score.overall_score)
+        
         conn.execute(
             """
             INSERT OR REPLACE INTO trust_scores (
@@ -387,22 +413,38 @@ class TrustStore:
             ),
         )
         conn.commit()
+        
+        log_agent_action(self.logger, "save_trust_score_complete", agent_did, trace_id)
 
     def get_score(self, agent_did: str) -> Optional[TrustScore]:
         """Get current cached trust score for an agent."""
+        trace_id = get_trace_id()
         conn = self._conn
+        
+        log_agent_action(self.logger, "get_trust_score", agent_did, trace_id)
+        
         cursor = conn.execute(
             "SELECT * FROM trust_scores WHERE agent_did = ?",
             (agent_did,),
         )
         row = cursor.fetchone()
         if not row:
+            log_agent_action(self.logger, "get_trust_score_not_found", agent_did, trace_id)
             return None
+        
+        log_agent_action(self.logger, "get_trust_score_complete", agent_did, trace_id,
+                        overall_score=row["overall_score"])
+        
         return self._row_to_score(row)
 
     def get_top_agents(self, limit: int = 10, min_interactions: int = 5) -> List[TrustScore]:
         """Get top agents by trust score."""
+        trace_id = get_trace_id()
         conn = self._conn
+        
+        log_agent_action(self.logger, "get_top_agents", agent_did, trace_id,
+                        limit=limit, min_interactions=min_interactions)
+        
         cursor = conn.execute(
             """
             SELECT * FROM trust_scores
@@ -413,11 +455,20 @@ class TrustStore:
             (min_interactions, limit),
         )
         rows = cursor.fetchall()
-        return [self._row_to_score(row) for row in rows]
+        results = [self._row_to_score(row) for row in rows]
+        
+        log_agent_action(self.logger, "get_top_agents_complete", agent_did, trace_id,
+                        count=len(results))
+        
+        return results
 
     def get_stats(self) -> dict:
         """Get overall trust system statistics."""
+        trace_id = get_trace_id()
         conn = self._conn
+        
+        log_agent_action(self.logger, "get_stats", agent_did, trace_id)
+        
         cursor = conn.execute("SELECT COUNT(DISTINCT agent_did) FROM trust_events")
         total_agents = cursor.fetchone()[0]
 
@@ -432,12 +483,16 @@ class TrustStore:
         cursor = conn.execute("SELECT AVG(overall_score) FROM trust_scores")
         avg_score = cursor.fetchone()[0] or 0.0
 
-        return {
+        stats = {
             "total_agents": total_agents,
             "total_events": total_events,
             "events_by_type": events_by_type,
             "average_trust_score": avg_score,
         }
+        
+        log_agent_action(self.logger, "get_stats_complete", agent_did, trace_id, **stats)
+        
+        return stats
 
     # ------------------------------------------------------------------
     # Dual sync/async methods

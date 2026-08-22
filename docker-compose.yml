@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # PostgreSQL for persistent registry (optional - can use SQLite for dev)
+  # PostgreSQL for persistent registry
   postgres:
     image: postgres:16-alpine
     environment:
@@ -18,7 +18,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # Redis for caching/sessions (optional)
+  # Redis for caching/sessions
   redis:
     image: redis:7-alpine
     ports:
@@ -34,7 +34,7 @@ services:
   # Registry Service
   registry:
     build:
-      context: ..
+      context: .
       dockerfile: docker/Dockerfile.registry
     ports:
       - "8081:8081"
@@ -47,13 +47,13 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      - ../src:/app/src
+      - ./src:/app/src
     command: python -m oai_network.registry.server
 
   # Gateway Service
   gateway:
     build:
-      context: ..
+      context: .
       dockerfile: docker/Dockerfile.gateway
     ports:
       - "8080:8080"
@@ -65,13 +65,13 @@ services:
     depends_on:
       - registry
     volumes:
-      - ../src:/app/src
+      - ./src:/app/src
     command: python -m oai_network.gateway.server
 
   # Translator Agent
   translator:
     build:
-      context: ..
+      context: .
       dockerfile: docker/Dockerfile.agent
     ports:
       - "8001:8001"
@@ -83,13 +83,13 @@ services:
     depends_on:
       - registry
     volumes:
-      - ../src:/app/src
+      - ./src:/app/src
     command: python -m oai_network.examples.translator_agent
 
   # Summarizer Agent
   summarizer:
     build:
-      context: ..
+      context: .
       dockerfile: docker/Dockerfile.agent
     ports:
       - "8002:8002"
@@ -101,13 +101,13 @@ services:
     depends_on:
       - registry
     volumes:
-      - ../src:/app/src
+      - ./src:/app/src
     command: python -m oai_network.examples.summarizer_agent
 
   # Code Analysis Agent
   code-analysis:
     build:
-      context: ..
+      context: .
       dockerfile: docker/Dockerfile.agent
     ports:
       - "8003:8003"
@@ -119,7 +119,7 @@ services:
     depends_on:
       - registry
     volumes:
-      - ../src:/app/src
+      - ./src:/app/src
     command: python -m oai_network.agents.code_analysis_agent
 
   # Prometheus for metrics collection (Stage 12)
@@ -128,7 +128,7 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -148,8 +148,8 @@ services:
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
-      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+      - ./docker/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./docker/grafana/datasources:/etc/grafana/provisioning/datasources
     depends_on:
       - prometheus
 

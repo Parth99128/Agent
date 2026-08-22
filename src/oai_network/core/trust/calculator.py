@@ -7,6 +7,9 @@ Calculates trust scores from reputation ledgers and events.
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from .models import TrustEvent, TrustScore, TrustEventType, ReputationLedger
+from oai_network.core.observability import (
+    get_logger, log_agent_action, get_trace_id
+)
 
 
 class TrustCalculator:
@@ -40,6 +43,7 @@ class TrustCalculator:
         self.target_interactions = target_interactions
         self.default_score = 0.5
         self.store = store
+        self.logger = get_logger("oai-network-trust-calculator")
     
     def set_store(self, store: 'TrustStore'):
         """Set the trust store for calculating scores."""
@@ -47,7 +51,11 @@ class TrustCalculator:
     
     def calculate_from_ledger(self, ledger: ReputationLedger) -> TrustScore:
         """Calculate trust score from a reputation ledger."""
+        trace_id = get_trace_id()
         events = ledger.events
+        
+        log_agent_action(self.logger, "calculate_from_ledger", ledger.agent_did, trace_id,
+                        events_count=len(events))
         
         if not events:
             return TrustScore(agent_did=ledger.agent_did)
@@ -136,7 +144,7 @@ class TrustCalculator:
             # Blend Wilson lower bound with overall score based on confidence
             overall = overall * confidence + wilson_lower * (1 - confidence)
         
-        return TrustScore(
+        result = TrustScore(
             agent_did=ledger.agent_did,
             overall_score=max(0.0, min(1.0, overall)),
             interaction_score=interaction_score,
@@ -157,6 +165,12 @@ class TrustCalculator:
             last_interaction=last_interaction,
             confidence=confidence,
         )
+        
+        log_agent_action(self.logger, "calculate_from_ledger_complete", ledger.agent_did, trace_id,
+                        overall_score=result.overall_score,
+                        confidence=result.confidence)
+        
+        return result
     
     def _calculate_interaction_score(self, events: list[TrustEvent]) -> float:
         """Calculate score from interaction events."""
@@ -281,9 +295,22 @@ class TrustCalculator:
     
     def calculate(self, agent_did: str, store: Optional['TrustStore'] = None) -> TrustScore:
         """Calculate trust score for an agent."""
+        trace_id = get_trace_id()
+        
+        log_agent_action(self.logger, "calculate", agent_did, trace_id)
+        
         # Use provided store or the one set on the calculator
         effective_store = store or self.store
         if effective_store is not None:
             ledger = effective_store.get_ledger(agent_did)
-            return self.calculate_from_ledger(ledger)
+            result = self.calculate_from_ledger(ledger)
+            
+            log_agent_action(self.logger, "calculate_complete", agent_did, trace_id,
+                           overall_score=result.overall_score)
+            
+            return result
+        
+        log_agent_action(self.logger, "calculate_no_store", agent_did, trace_id,
+                       default_score=self.default_score)
+        
         return TrustScore(agent_did=agent_did, overall_score=self.default_score)

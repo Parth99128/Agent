@@ -7,12 +7,15 @@ into capability names for agent discovery.
 
 import json
 import logging
+import time
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 
 import ollama
 
-logger = logging.getLogger(__name__)
+from ..observability import get_logger, log_request, log_response, log_error
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -78,13 +81,26 @@ Capability name:"""
         
         Uses caching to avoid repeated LLM calls for the same query.
         """
+        trace_id = get_trace_id()
+        start_time = time.time()
+        
+        log_request(logger, "CLASSIFY", query[:50], trace_id, query=query)
+        
         # Check cache first
         if query in self._capability_cache:
-            return self._capability_cache[query]
+            capability = self._capability_cache[query]
+            duration_ms = (time.time() - start_time) * 1000
+            log_response(logger, "CLASSIFY", query[:50], 200, duration_ms, trace_id, 
+                        capability=capability, cached=True)
+            return capability
         
         # If no capabilities registered, fall back to keyword matching
         if not self.capabilities:
-            return self._fallback_classify(query)
+            capability = self._fallback_classify(query)
+            duration_ms = (time.time() - start_time) * 1000
+            log_response(logger, "CLASSIFY", query[:50], 200, duration_ms, trace_id, 
+                        capability=capability, fallback=True)
+            return capability
         
         try:
             prompt = self._build_prompt(query)
@@ -107,20 +123,35 @@ Capability name:"""
             valid_names = [c.name for c in self.capabilities]
             if capability in valid_names:
                 self._capability_cache[query] = capability
+                duration_ms = (time.time() - start_time) * 1000
+                log_response(logger, "CLASSIFY", query[:50], 200, duration_ms, trace_id, 
+                            capability=capability, cached=False)
                 return capability
             
             # Try to find partial match
             for valid in valid_names:
                 if valid in capability or capability in valid:
                     self._capability_cache[query] = valid
+                    duration_ms = (time.time() - start_time) * 1000
+                    log_response(logger, "CLASSIFY", query[:50], 200, duration_ms, trace_id, 
+                                capability=valid, partial_match=True)
                     return valid
             
             logger.warning(f"LLM returned unknown capability: '{capability}', falling back")
-            return self._fallback_classify(query)
+            capability = self._fallback_classify(query)
+            duration_ms = (time.time() - start_time) * 1000
+            log_response(logger, "CLASSIFY", query[:50], 200, duration_ms, trace_id, 
+                        capability=capability, fallback=True)
+            return capability
             
         except Exception as e:
             logger.error(f"LLM classification failed: {e}, falling back to keyword matching")
-            return self._fallback_classify(query)
+            capability = self._fallback_classify(query)
+            duration_ms = (time.time() - start_time) * 1000
+            log_error(logger, "LLM classification failed, using fallback", trace_id, error=e)
+            log_response(logger, "CLASSIFY", query[:50], 500, duration_ms, trace_id, 
+                        capability=capability, fallback=True, error=str(e))
+            return capability
     
     def _fallback_classify(self, query: str) -> str:
         """Fallback keyword-based classification."""

@@ -13,6 +13,12 @@ from mcp.client.stdio import stdio_client
 
 from oai_network.core.identity.models import AgentIdentity
 from oai_network.protocols.a2a.models import A2ARequest, A2AResponse
+from oai_network.core.observability import (
+    get_logger, log_agent_action, log_error, get_trace_id
+)
+
+# Configure structured logging
+logger = get_logger("oai-network-translator-agent")
 
 
 class TranslatorAgent:
@@ -44,7 +50,12 @@ class TranslatorAgent:
         A2A method: Translate text.
         Expected params: {text, target_language, source_language?, model?}
         """
+        trace_id = get_trace_id()
         request_id = params.get("request_id", "unknown")
+        
+        log_agent_action(logger, "translate", trace_id,
+                        agent_did=self.identity.did if self.identity else None,
+                        target_language=params.get("target_language", ""))
         
         try:
             text = params.get("text", "")
@@ -74,6 +85,7 @@ class TranslatorAgent:
             })
             
             if "error" in result:
+                log_error(logger, Exception(result["error"]), trace_id, context={"method": "translate"})
                 return A2AResponse(
                     jsonrpc="2.0",
                     id=request_id,
@@ -83,6 +95,10 @@ class TranslatorAgent:
             # Store for follow-up
             self._last_translation = result
             
+            log_agent_action(logger, "translate_complete", trace_id,
+                           agent_did=self.identity.did if self.identity else None,
+                           target_language=target_language)
+            
             return A2AResponse(
                 jsonrpc="2.0",
                 id=request_id,
@@ -90,6 +106,7 @@ class TranslatorAgent:
             )
             
         except Exception as e:
+            log_error(logger, e, trace_id, context={"method": "translate"})
             return A2AResponse(
                 jsonrpc="2.0",
                 id=request_id,
@@ -101,7 +118,13 @@ class TranslatorAgent:
         A2A method: Translate a file.
         Expected params: {file_path, target_language, source_language?, model?}
         """
+        trace_id = get_trace_id()
         request_id = params.get("request_id", "unknown")
+        
+        log_agent_action(logger, "translate_file", trace_id,
+                        agent_did=self.identity.did if self.identity else None,
+                        file_path=params.get("file_path", ""),
+                        target_language=params.get("target_language", ""))
         
         try:
             file_path = params.get("file_path", "")
@@ -131,6 +154,7 @@ class TranslatorAgent:
             })
             
             if "error" in result:
+                log_error(logger, Exception(result["error"]), trace_id, context={"method": "translate_file"})
                 return A2AResponse(
                     jsonrpc="2.0",
                     id=request_id,
@@ -139,6 +163,9 @@ class TranslatorAgent:
             
             self._last_translation = result
             
+            log_agent_action(logger, "translate_file_complete", trace_id,
+                           agent_did=self.identity.did if self.identity else None)
+            
             return A2AResponse(
                 jsonrpc="2.0",
                 id=request_id,
@@ -146,6 +173,7 @@ class TranslatorAgent:
             )
             
         except Exception as e:
+            log_error(logger, e, trace_id, context={"method": "translate_file"})
             return A2AResponse(
                 jsonrpc="2.0",
                 id=request_id,
@@ -156,17 +184,25 @@ class TranslatorAgent:
         """
         A2A method: Get the last translation for follow-up queries.
         """
+        trace_id = get_trace_id()
         request_id = params.get("request_id", "unknown")
+        
+        log_agent_action(logger, "get_last_translation", trace_id,
+                        agent_did=self.identity.did if self.identity else None)
         
         try:
             result = await self._call_mcp_tool("get_last_translation", {})
             
             if "error" in result:
+                log_error(logger, Exception(result["error"]), trace_id, context={"method": "get_last_translation"})
                 return A2AResponse(
                     jsonrpc="2.0",
                     id=request_id,
                     error={"code": -32603, "message": result["error"]}
                 )
+            
+            log_agent_action(logger, "get_last_translation_complete", trace_id,
+                           agent_did=self.identity.did if self.identity else None)
             
             return A2AResponse(
                 jsonrpc="2.0",
@@ -175,6 +211,7 @@ class TranslatorAgent:
             )
             
         except Exception as e:
+            log_error(logger, e, trace_id, context={"method": "get_last_translation"})
             return A2AResponse(
                 jsonrpc="2.0",
                 id=request_id,
@@ -185,17 +222,25 @@ class TranslatorAgent:
         """
         A2A method: List supported languages.
         """
+        trace_id = get_trace_id()
         request_id = params.get("request_id", "unknown")
+        
+        log_agent_action(logger, "list_languages", trace_id,
+                        agent_did=self.identity.did if self.identity else None)
         
         try:
             result = await self._call_mcp_tool("list_languages", {})
             
             if "error" in result:
+                log_error(logger, Exception(result["error"]), trace_id, context={"method": "list_languages"})
                 return A2AResponse(
                     jsonrpc="2.0",
                     id=request_id,
                     error={"code": -32603, "message": result["error"]}
                 )
+            
+            log_agent_action(logger, "list_languages_complete", trace_id,
+                           agent_did=self.identity.did if self.identity else None)
             
             return A2AResponse(
                 jsonrpc="2.0",
@@ -204,6 +249,7 @@ class TranslatorAgent:
             )
             
         except Exception as e:
+            log_error(logger, e, trace_id, context={"method": "list_languages"})
             return A2AResponse(
                 jsonrpc="2.0",
                 id=request_id,
@@ -212,7 +258,11 @@ class TranslatorAgent:
     
     async def capabilities(self, params: Dict[str, Any]) -> A2AResponse:
         """A2A method: Return agent capabilities."""
+        trace_id = get_trace_id()
         request_id = params.get("request_id", "unknown")
+        
+        log_agent_action(logger, "capabilities", trace_id,
+                        agent_did=self.identity.did if self.identity else None)
         
         caps = {
             "name": "Translator Agent",
@@ -236,9 +286,14 @@ class TranslatorAgent:
     
     async def handle_request(self, request: A2ARequest) -> A2AResponse:
         """Route A2A requests to appropriate handler."""
+        trace_id = get_trace_id()
         method = request.method
         params = request.params or {}
         params["request_id"] = request.id
+        
+        log_agent_action(logger, "handle_request", trace_id,
+                        agent_did=self.identity.did if self.identity else None,
+                        method=method)
         
         if method == "translate":
             return await self.translate(params)
@@ -251,6 +306,7 @@ class TranslatorAgent:
         elif method == "capabilities":
             return await self.capabilities(params)
         else:
+            log_error(logger, Exception(f"Method not found: {method}"), trace_id, context={"method": method})
             return A2AResponse(
                 jsonrpc="2.0",
                 id=request.id,

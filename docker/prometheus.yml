@@ -1,0 +1,33 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'oai-network-registry'
+    static_configs:
+      - targets: ['registry:8081']
+    metrics_path: '/metrics'
+
+  - job_name: 'oai-network-gateway'
+    static_configs:
+      - targets: ['gateway:8080']
+    metrics_path: '/metrics'
+
+  - job_name: 'oai-network-translator'
+    static_configs:
+      - targets: ['translator:8001']
+    metrics_path: '/metrics'
+
+  - job_name: 'oai-network-summarizer'
+    static_configs:
+      - targets: ['summarizer:8002']
+    metrics_path: '/metrics'
+
+  - job_name: 'oai-network-code-analysis'
+    static_configs:
+      - targets: ['code-analysis:8003']
+    metrics_path: '/metrics'

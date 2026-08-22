@@ -7,6 +7,9 @@ Evaluates policies against requests to make allow/deny decisions.
 from typing import Optional, List, Any
 from pydantic import BaseModel, Field
 from .models import Policy, PolicyRule, PolicyEffect, PolicyCondition, Budget, BudgetPeriod
+from oai_network.core.observability import (
+    get_logger, log_policy_check, get_trace_id
+)
 
 
 class PolicyDecision(BaseModel):
@@ -31,6 +34,7 @@ class PolicyEngine:
 
     def __init__(self, policy: Optional[Policy] = None):
         self.policy = policy
+        self.logger = get_logger("oai-network-policy-engine")
 
     def evaluate(self, policy: Policy, context: dict[str, Any]) -> PolicyDecision:
         """
@@ -45,6 +49,11 @@ class PolicyEngine:
         Returns:
             PolicyDecision with allowed, matched_rule_id, reason, explanation
         """
+        trace_id = get_trace_id()
+        
+        log_policy_check(self.logger, policy.policy_id, True, trace_id,
+                        action="evaluate", context_keys=list(context.keys()))
+        
         # Check rules in order - first match wins
         for rule in policy.rules:
             if rule.matches(context):
@@ -57,6 +66,9 @@ class PolicyEngine:
                     cost = context.get("cost", 0.0)
                     for budget in policy.budgets:
                         if budget.is_exceeded(cost):
+                            log_policy_check(self.logger, policy.policy_id, False, trace_id,
+                                           action="evaluate_budget_exceeded", budget_name=budget.name,
+                                           cost=cost)
                             return PolicyDecision(
                                 allowed=False,
                                 matched_rule_id=rule.rule_id,
@@ -64,6 +76,10 @@ class PolicyEngine:
                                 explanation=f"Rule '{rule.rule_id}' (ALLOW) matched but budget exceeded",
                             )
 
+                log_policy_check(self.logger, policy.policy_id, allowed, trace_id,
+                               action="evaluate_complete", rule_id=rule.rule_id,
+                               reason=reason)
+                
                 return PolicyDecision(
                     allowed=allowed,
                     matched_rule_id=rule.rule_id,
@@ -72,6 +88,9 @@ class PolicyEngine:
                 )
 
         # No rules matched - default deny
+        log_policy_check(self.logger, policy.policy_id, False, trace_id,
+                       action="evaluate_default_deny")
+        
         return PolicyDecision(
             allowed=False,
             matched_rule_id=None,

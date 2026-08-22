@@ -13,6 +13,12 @@ from mcp.client.stdio import stdio_client
 
 from oai_network.core.identity.models import AgentIdentity
 from oai_network.protocols.a2a.models import A2ARequest, A2AResponse
+from oai_network.core.observability import (
+    get_logger, log_agent_action, log_error, get_trace_id
+)
+
+# Configure structured logging
+logger = get_logger("oai-network-summarizer-agent")
 
 
 class SummarizerAgent:
@@ -44,7 +50,12 @@ class SummarizerAgent:
         A2A method: Summarize text.
         Expected params: {text, style?, max_length?, model?}
         """
+        trace_id = get_trace_id()
         request_id = params.get("request_id", "unknown")
+        
+        log_agent_action(logger, "analyze", trace_id,
+                        agent_did=self.identity.did if self.identity else None,
+                        style=params.get("style", "concise"))
         
         try:
             text = params.get("text", "")
@@ -67,6 +78,7 @@ class SummarizerAgent:
             })
             
             if "error" in result:
+                log_error(logger, Exception(result["error"]), trace_id, context={"method": "analyze"})
                 return A2AResponse(
                     jsonrpc="2.0",
                     id=request_id,
@@ -76,6 +88,10 @@ class SummarizerAgent:
             # Store for follow-up
             self._last_summary = result
             
+            log_agent_action(logger, "analyze_complete", trace_id,
+                           agent_did=self.identity.did if self.identity else None,
+                           summary_length=len(result.get("summary", "")))
+            
             return A2AResponse(
                 jsonrpc="2.0",
                 id=request_id,
@@ -83,6 +99,7 @@ class SummarizerAgent:
             )
             
         except Exception as e:
+            log_error(logger, e, trace_id, context={"method": "analyze"})
             return A2AResponse(
                 jsonrpc="2.0",
                 id=request_id,
@@ -94,7 +111,12 @@ class SummarizerAgent:
         A2A method: Summarize a file.
         Expected params: {file_path, style?, max_length?, model?}
         """
+        trace_id = get_trace_id()
         request_id = params.get("request_id", "unknown")
+        
+        log_agent_action(logger, "summarize_file", trace_id,
+                        agent_did=self.identity.did if self.identity else None,
+                        file_path=params.get("file_path", ""))
         
         try:
             file_path = params.get("file_path", "")
@@ -117,6 +139,7 @@ class SummarizerAgent:
             })
             
             if "error" in result:
+                log_error(logger, Exception(result["error"]), trace_id, context={"method": "summarize_file"})
                 return A2AResponse(
                     jsonrpc="2.0",
                     id=request_id,
@@ -125,6 +148,9 @@ class SummarizerAgent:
             
             self._last_summary = result
             
+            log_agent_action(logger, "summarize_file_complete", trace_id,
+                           agent_did=self.identity.did if self.identity else None)
+            
             return A2AResponse(
                 jsonrpc="2.0",
                 id=request_id,
@@ -132,6 +158,7 @@ class SummarizerAgent:
             )
             
         except Exception as e:
+            log_error(logger, e, trace_id, context={"method": "summarize_file"})
             return A2AResponse(
                 jsonrpc="2.0",
                 id=request_id,
@@ -142,17 +169,25 @@ class SummarizerAgent:
         """
         A2A method: Get the last summary for follow-up queries.
         """
+        trace_id = get_trace_id()
         request_id = params.get("request_id", "unknown")
+        
+        log_agent_action(logger, "get_last_summary", trace_id,
+                        agent_did=self.identity.did if self.identity else None)
         
         try:
             result = await self._call_mcp_tool("get_last_summary", {})
             
             if "error" in result:
+                log_error(logger, Exception(result["error"]), trace_id, context={"method": "get_last_summary"})
                 return A2AResponse(
                     jsonrpc="2.0",
                     id=request_id,
                     error={"code": -32603, "message": result["error"]}
                 )
+            
+            log_agent_action(logger, "get_last_summary_complete", trace_id,
+                           agent_did=self.identity.did if self.identity else None)
             
             return A2AResponse(
                 jsonrpc="2.0",
@@ -161,6 +196,7 @@ class SummarizerAgent:
             )
             
         except Exception as e:
+            log_error(logger, e, trace_id, context={"method": "get_last_summary"})
             return A2AResponse(
                 jsonrpc="2.0",
                 id=request_id,
@@ -169,7 +205,11 @@ class SummarizerAgent:
     
     async def capabilities(self, params: Dict[str, Any]) -> A2AResponse:
         """A2A method: Return agent capabilities."""
+        trace_id = get_trace_id()
         request_id = params.get("request_id", "unknown")
+        
+        log_agent_action(logger, "capabilities", trace_id,
+                        agent_did=self.identity.did if self.identity else None)
         
         caps = {
             "name": "Summarizer Agent",
@@ -192,9 +232,14 @@ class SummarizerAgent:
     
     async def handle_request(self, request: A2ARequest) -> A2AResponse:
         """Route A2A requests to appropriate handler."""
+        trace_id = get_trace_id()
         method = request.method
         params = request.params or {}
         params["request_id"] = request.id
+        
+        log_agent_action(logger, "handle_request", trace_id,
+                        agent_did=self.identity.did if self.identity else None,
+                        method=method)
         
         if method == "analyze":
             return await self.analyze(params)
@@ -205,6 +250,7 @@ class SummarizerAgent:
         elif method == "capabilities":
             return await self.capabilities(params)
         else:
+            log_error(logger, Exception(f"Method not found: {method}"), trace_id, context={"method": method})
             return A2AResponse(
                 jsonrpc="2.0",
                 id=request.id,

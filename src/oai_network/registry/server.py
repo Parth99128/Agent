@@ -10,7 +10,8 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from .service import RegistryService, RegistryConfig
@@ -25,9 +26,17 @@ from .models import (
     DiscoveryResponse,
 )
 from ..core.capabilities.models import AgentManifest
+from ..core.observability import (
+    setup_json_logging, get_logger, MetricsMiddleware, metrics_endpoint,
+    record_agent_discovery, log_request, log_response, log_error,
+    log_agent_action
+)
 
 # Global registry service
 _registry_service: Optional[RegistryService] = None
+
+# Setup structured logging
+logger = setup_json_logging("oai-network-registry")
 
 
 @asynccontextmanager
@@ -47,6 +56,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Add metrics middleware
+app.add_middleware(MetricsMiddleware, service_name="registry")
+
+# Add metrics endpoint
+app.add_route("/metrics", metrics_endpoint, methods=["GET"])
+
 
 def get_registry() -> RegistryService:
     if _registry_service is None:
@@ -55,79 +70,120 @@ def get_registry() -> RegistryService:
 
 
 @app.get("/health")
-async def health_check():
+async def health_check(request: Request):
     """Health check endpoint."""
+    trace_id = getattr(request.state, "trace_id", "no-trace")
+    log_request(logger, "GET", "/health", trace_id)
     return {"status": "healthy", "service": "oai-network-registry"}
 
 
 @app.get("/stats")
-async def get_stats(registry: RegistryService = Depends(get_registry)):
+async def get_stats(request: Request, registry: RegistryService = Depends(get_registry)):
     """Get registry statistics."""
+    trace_id = getattr(request.state, "trace_id", "no-trace")
+    log_request(logger, "GET", "/stats", trace_id)
     return await registry.get_stats()
 
 
 @app.post("/register", response_model=RegistrationResponse)
 async def register_agent(
-    request: RegistrationRequest,
+    request: Request,
+    reg_request: RegistrationRequest,
     registry: RegistryService = Depends(get_registry),
 ):
     """Register a new agent."""
+    trace_id = getattr(request.state, "trace_id", "no-trace")
+    log_request(logger, "POST", "/register", trace_id)
+    
     try:
-        manifest = AgentManifest(**request.manifest)
+        manifest = AgentManifest(**reg_request.manifest)
         response = await registry.register_agent(manifest)
+        
+        # Log agent registration
+        log_agent_action(logger, "registered", response.agent_did, trace_id)
+        
         return response
     except Exception as e:
+        log_error(logger, "Failed to register agent", trace_id, error=e)
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/heartbeat", response_model=HeartbeatResponse)
 async def heartbeat(
-    request: HeartbeatRequest,
+    request: Request,
+    hb_request: HeartbeatRequest,
     registry: RegistryService = Depends(get_registry),
 ):
     """Receive agent heartbeat."""
+    trace_id = getattr(request.state, "trace_id", "no-trace")
+    log_request(logger, "POST", "/heartbeat", trace_id, agent_did=hb_request.agent_did)
+    
     try:
-        response = await registry.heartbeat(request)
+        response = await registry.heartbeat(hb_request)
+        
+        # Log agent heartbeat
+        log_agent_action(logger, "heartbeat", hb_request.agent_did, trace_id)
+        
         return response
     except Exception as e:
+        log_error(logger, "Heartbeat failed", trace_id, error=e, agent_did=hb_request.agent_did)
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/unregister")
 async def unregister_agent(
+    request: Request,
     agent_did: str,
     registry: RegistryService = Depends(get_registry),
 ):
     """Unregister an agent."""
+    trace_id = getattr(request.state, "trace_id", "no-trace")
+    log_request(logger, "POST", "/unregister", trace_id, agent_did=agent_did)
+    
     try:
         await registry.unregister_agent(agent_did)
+        
+        # Log agent unregistration
+        log_agent_action(logger, "unregistered", agent_did, trace_id)
+        
         return {"success": True, "message": f"Agent {agent_did} unregistered"}
     except Exception as e:
+        log_error(logger, "Failed to unregister agent", trace_id, error=e, agent_did=agent_did)
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/agents/{agent_did}", response_model=RegistryEntry)
 async def get_agent(
+    request: Request,
     agent_did: str,
     registry: RegistryService = Depends(get_registry),
 ):
     """Get agent by DID."""
+    trace_id = getattr(request.state, "trace_id", "no-trace")
+    log_request(logger, "GET", f"/agents/{agent_did}", trace_id, agent_did=agent_did)
+    
     entry = await registry.get_agent(agent_did)
     if not entry:
+        log_error(logger, "Agent not found", trace_id, agent_did=agent_did)
         raise HTTPException(status_code=404, detail="Agent not found")
     return entry
 
 
 @app.get("/agents/{agent_did}/trust-history")
 async def get_trust_history(
+    request: Request,
     agent_did: str,
     limit: int = 100,
     offset: int = 0,
     registry: RegistryService = Depends(get_registry),
 ):
     """Get trust history for an agent."""
+    trace_id = getattr(request.state, "trace_id", "no-trace")
+    log_request(logger, "GET", f"/agents/{agent_did}/trust-history", trace_id, agent_did=agent_did)
+    
     entry = await registry.get_agent(agent_did)
     if not entry:
+        log_error(logger, "Agent not found", trace_id, agent_did=agent_did)
         raise HTTPException(status_code=404, detail="Agent not found")
     
     # Get trust events from trust store
@@ -146,10 +202,14 @@ async def get_trust_history(
 
 @app.post("/discover", response_model=DiscoveryResponse)
 async def discover_agents(
+    request: Request,
     query: DiscoveryQuery,
     registry: RegistryService = Depends(get_registry),
 ):
     """Discover agents matching criteria."""
+    trace_id = getattr(request.state, "trace_id", "no-trace")
+    log_request(logger, "POST", "/discover", trace_id, capability=query.capability)
+    
     try:
         # Extract natural language query from capability field if it looks like a query
         nl_query = None
@@ -164,8 +224,17 @@ async def discover_agents(
             capability=capability,
             nl_query=nl_query,
         )
+        
+        # Record discovery metric
+        record_agent_discovery("registry", capability or "unknown")
+        
+        # Log discovery
+        log_agent_action(logger, "discovered", f"{len(results)} agents", trace_id, 
+                        capability=capability, nl_query=nl_query)
+        
         return DiscoveryResponse(agents=results, total=len(results))
     except Exception as e:
+        log_error(logger, "Discovery failed", trace_id, error=e)
         raise HTTPException(status_code=400, detail=str(e))
 
 

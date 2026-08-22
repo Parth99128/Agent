@@ -16,6 +16,10 @@ from .models import (
 )
 from ..capabilities.models import AgentManifest
 from ..capabilities.matcher import CapabilityMatcher
+from oai_network.core.observability import (
+    get_logger, log_agent_action, log_error, get_trace_id,
+    record_agent_discovery
+)
 
 
 class DiscoveryService:
@@ -41,6 +45,7 @@ class DiscoveryService:
         self.matcher = CapabilityMatcher()
         # In-memory registry: agent_did -> RegistryEntry
         self._registry: dict[str, RegistryEntry] = {}
+        self.logger = get_logger("oai-network-discovery-service")
 
     async def register_agent(self, manifest: Any) -> RegistrationResponse:
         """
@@ -52,6 +57,7 @@ class DiscoveryService:
         Returns:
             RegistrationResponse with success status and agent_did
         """
+        trace_id = get_trace_id()
         # Parse manifest if it's a string
         if isinstance(manifest, str):
             manifest = AgentManifest.model_validate_json(manifest)
@@ -60,10 +66,15 @@ class DiscoveryService:
 
         agent_did = manifest.identity.did
 
+        log_agent_action(self.logger, "register_agent", agent_did, trace_id,
+                        agent_name=manifest.name)
+
         # Check if agent already registered
         if agent_did in self._registry:
             existing = self._registry[agent_did]
             if existing.status == "active":
+                log_agent_action(self.logger, "register_agent_conflict", agent_did, trace_id,
+                                status="already_registered")
                 return RegistrationResponse(
                     success=False,
                     agent_did=agent_did,
@@ -92,6 +103,9 @@ class DiscoveryService:
 
         self._registry[agent_did] = entry
 
+        log_agent_action(self.logger, "register_agent_complete", agent_did, trace_id,
+                        registration_id=registration_id)
+
         return RegistrationResponse(
             success=True,
             agent_did=agent_did,
@@ -109,6 +123,12 @@ class DiscoveryService:
         Returns:
             List of DiscoveryResult objects
         """
+        trace_id = get_trace_id()
+        
+        log_agent_action(self.logger, "discover", "system", trace_id,
+                        query=query.query, capability_type=query.capability_type,
+                        max_results=query.max_results)
+        
         # Get all active, non-expired entries
         now = datetime.now(timezone.utc)
         manifests: list[AgentManifest] = []
@@ -174,7 +194,15 @@ class DiscoveryService:
         # Paginate
         start = query.offset
         end = start + query.max_results
-        return results[start:end]
+        paginated_results = results[start:end]
+        
+        # Record discovery metric
+        record_agent_discovery("discovery_service", len(paginated_results))
+        
+        log_agent_action(self.logger, "discover_complete", "system", trace_id,
+                        results_count=len(paginated_results))
+        
+        return paginated_results
 
     def _sort_results(
         self,
@@ -218,10 +246,14 @@ class DiscoveryService:
         Returns:
             RegistrationResponse with success status
         """
+        trace_id = get_trace_id()
         agent_did = heartbeat.agent_did
         entry = self._registry.get(agent_did)
 
+        log_agent_action(self.logger, "heartbeat", agent_did, trace_id)
+
         if entry is None or entry.status != "active":
+            log_agent_action(self.logger, "heartbeat_not_found", agent_did, trace_id)
             return RegistrationResponse(
                 success=False,
                 agent_did=agent_did,
@@ -232,6 +264,8 @@ class DiscoveryService:
         now = datetime.now(timezone.utc)
         entry.expires_at = now + timedelta(seconds=self.default_ttl)
         entry.updated_at = now
+
+        log_agent_action(self.logger, "heartbeat_complete", agent_did, trace_id)
 
         return RegistrationResponse(
             success=True,
@@ -250,9 +284,14 @@ class DiscoveryService:
         Returns:
             RegistrationResponse with success status
         """
+        trace_id = get_trace_id()
+        
+        log_agent_action(self.logger, "unregister_agent", agent_did, trace_id)
+        
         entry = self._registry.get(agent_did)
 
         if entry is None:
+            log_agent_action(self.logger, "unregister_agent_not_found", agent_did, trace_id)
             return RegistrationResponse(
                 success=False,
                 agent_did=agent_did,
@@ -261,6 +300,8 @@ class DiscoveryService:
 
         entry.status = "inactive"
         entry.updated_at = datetime.now(timezone.utc)
+
+        log_agent_action(self.logger, "unregister_agent_complete", agent_did, trace_id)
 
         return RegistrationResponse(
             success=True,

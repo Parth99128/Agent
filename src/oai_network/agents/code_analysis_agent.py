@@ -10,7 +10,8 @@ import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
 import uvicorn
 
@@ -18,14 +19,17 @@ from oai_network.core.identity.generator import IdentityGenerator
 from oai_network.core.identity.models import IdentityDocument, KeyType, AgentIdentity
 from oai_network.core.capabilities.models import AgentManifest, Capability, ServiceEndpoint, CapabilityPricing
 from oai_network.sdk.python.client import OAIClient
+from oai_network.core.observability import (
+    setup_json_logging, get_logger, MetricsMiddleware, metrics_endpoint,
+    log_request, log_response, log_error, log_agent_action, get_trace_id
+)
 
 # MCP client imports
 from mcp.client.stdio import stdio_client, StdioServerParameters
 from mcp import ClientSession
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Configure structured logging
+logger = setup_json_logging("oai-network-code-analysis-agent")
 
 
 class AnalysisRequest(BaseModel):
@@ -55,6 +59,10 @@ class CodeAnalysisAgent:
         self._mcp_write = None
         self._mcp_task_group = None
         self._last_analysis: Dict[str, Any] = {}
+        
+        # Add observability middleware
+        self.app.add_middleware(MetricsMiddleware, service_name="code-analysis-agent")
+        
         self._setup_routes()
     
     def _setup_routes(self):
@@ -71,26 +79,46 @@ class CodeAnalysisAgent:
                 return self.manifest.model_dump(mode='json')
             return {"error": "Not initialized"}
         
+        @self.app.get("/metrics")
+        async def metrics():
+            """Prometheus metrics endpoint."""
+            return await metrics_endpoint()
+        
         @self.app.post("/a2a")
-        async def a2a_endpoint(request: dict):
+        async def a2a_endpoint(request: Request):
             """A2A protocol endpoint."""
-            method = request.get("method")
-            params = request.get("params", {})
-            request_id = request.get("id")
+            trace_id = get_trace_id()
+            body = await request.json()
+            method = body.get("method")
+            params = body.get("params", {})
+            request_id = body.get("id")
             
-            if method == "analyze":
-                return await self._handle_analyze(params, request_id)
-            elif method == "get_security_issues":
-                return await self._handle_get_security_issues(params, request_id)
-            elif method == "get_quality_metrics":
-                return await self._handle_get_quality_metrics(params, request_id)
-            elif method == "capabilities":
-                return await self._handle_capabilities(request_id)
-            else:
+            log_request(logger, "A2A", method, trace_id, agent_did=self.identity.identity.did if self.identity else None)
+            
+            try:
+                if method == "analyze":
+                    result = await self._handle_analyze(params, request_id)
+                elif method == "get_security_issues":
+                    result = await self._handle_get_security_issues(params, request_id)
+                elif method == "get_quality_metrics":
+                    result = await self._handle_get_quality_metrics(params, request_id)
+                elif method == "capabilities":
+                    result = await self._handle_capabilities(request_id)
+                else:
+                    result = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {"code": -32601, "message": f"Method not found: {method}"}
+                    }
+                
+                log_response(logger, "A2A", method, 200 if "error" not in result else 500, 0.0, trace_id)
+                return result
+            except Exception as e:
+                log_error(logger, e, trace_id, context={"method": method, "agent": self.name})
                 return {
                     "jsonrpc": "2.0",
                     "id": request_id,
-                    "error": {"code": -32601, "message": f"Method not found: {method}"}
+                    "error": {"code": -32603, "message": str(e)}
                 }
     
     async def _ensure_mcp_connection(self):
@@ -127,6 +155,11 @@ class CodeAnalysisAgent:
     
     async def _handle_analyze(self, params: dict, request_id: str) -> dict:
         """Handle analysis request."""
+        trace_id = get_trace_id()
+        log_agent_action(logger, "analyze", 
+                        self.identity.identity.did if self.identity else "unknown", trace_id,
+                        path=params.get("path", "."))
+        
         try:
             import sys
             from mcp.client.stdio import stdio_client, StdioServerParameters
@@ -156,13 +189,17 @@ class CodeAnalysisAgent:
                     # Store for follow-up queries
                     self._last_analysis = result_data
                     
+                    log_agent_action(logger, "analyze_complete", 
+                                   self.identity.identity.did if self.identity else "unknown", trace_id,
+                                   issues_found=len(result_data.get("security_issues", [])))
+                    
                     return {
                         "jsonrpc": "2.0",
                         "id": request_id,
                         "result": result_data
                     }
         except Exception as e:
-            logger.error(f"Analysis failed: {e}")
+            log_error(logger, e, trace_id, context={"method": "analyze", "agent": self.name})
             return {
                 "jsonrpc": "2.0",
                 "id": request_id,
@@ -171,6 +208,11 @@ class CodeAnalysisAgent:
     
     async def _handle_get_security_issues(self, params: dict, request_id: str) -> dict:
         """Handle get security issues request."""
+        trace_id = get_trace_id()
+        log_agent_action(logger, "get_security_issues", 
+                        self.identity.identity.did if self.identity else "unknown", trace_id,
+                        severity=params.get("severity", "ALL"))
+        
         try:
             # Use stored analysis results
             severity = params.get("severity", "ALL").upper()
@@ -185,13 +227,17 @@ class CodeAnalysisAgent:
                 "filter": severity,
             }
             
+            log_agent_action(logger, "get_security_issues_complete", 
+                           self.identity.identity.did if self.identity else "unknown", trace_id,
+                           issues_returned=len(security_issues))
+            
             return {
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": result_data
             }
         except Exception as e:
-            logger.error(f"Get security issues failed: {e}")
+            log_error(logger, e, trace_id, context={"method": "get_security_issues", "agent": self.name})
             return {
                 "jsonrpc": "2.0",
                 "id": request_id,
@@ -200,6 +246,10 @@ class CodeAnalysisAgent:
     
     async def _handle_get_quality_metrics(self, params: dict, request_id: str) -> dict:
         """Handle get quality metrics request."""
+        trace_id = get_trace_id()
+        log_agent_action(logger, "get_quality_metrics", 
+                        self.identity.identity.did if self.identity else "unknown", trace_id)
+        
         try:
             # Use stored analysis results
             metrics = self._last_analysis.get("metrics", {})
@@ -210,13 +260,16 @@ class CodeAnalysisAgent:
                 "quality_issues_sample": quality_issues[:20],
             }
             
+            log_agent_action(logger, "get_quality_metrics_complete", 
+                           self.identity.identity.did if self.identity else "unknown", trace_id)
+            
             return {
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": result_data
             }
         except Exception as e:
-            logger.error(f"Get quality metrics failed: {e}")
+            log_error(logger, e, trace_id, context={"method": "get_quality_metrics", "agent": self.name})
             return {
                 "jsonrpc": "2.0",
                 "id": request_id,

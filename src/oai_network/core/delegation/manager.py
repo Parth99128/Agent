@@ -5,6 +5,7 @@ Manages the delegation lifecycle - requesting, tracking, and completing delegati
 """
 
 import uuid
+import time
 from datetime import datetime, timezone
 from typing import Optional, List, Any
 from .models import (
@@ -12,6 +13,13 @@ from .models import (
     DelegationResult, DelegationChain, DelegationStatus,
     DelegationPolicy
 )
+
+from ..observability import (
+    get_logger, log_delegation, log_policy_check, record_delegation,
+    get_trace_id, set_trace_id, log_request, log_response
+)
+
+logger = get_logger(__name__)
 
 
 class DelegationManager:
@@ -51,11 +59,20 @@ class DelegationManager:
         Returns:
             DelegationResponse with accepted status and task_id
         """
+        trace_id = get_trace_id()
+        start_time = time.time()
+        
+        log_request(logger, "DELEGATE", request.capability, trace_id, 
+                   delegator_did=request.delegator_did, capability=request.capability)
+        
         # Find delegatee if not specified
         delegatee_did = request.delegatee_did
         if delegatee_did is None:
             delegatee_did = await self._find_best_agent(request.capability, request.delegator_did)
             if not delegatee_did:
+                duration_ms = (time.time() - start_time) * 1000
+                log_response(logger, "DELEGATE", request.capability, 404, duration_ms, trace_id,
+                            accepted=False, reason="No capable agent found")
                 return DelegationResponse(
                     request_id=request.id,
                     delegatee_did=None,
@@ -76,6 +93,14 @@ class DelegationManager:
         )
 
         self.tasks[task_id] = task
+
+        # Log delegation
+        log_delegation(logger, request.delegator_did, delegatee_did, task_id, trace_id,
+                      capability=request.capability)
+        
+        duration_ms = (time.time() - start_time) * 1000
+        log_response(logger, "DELEGATE", request.capability, 200, duration_ms, trace_id,
+                    accepted=True, task_id=task_id, delegatee_did=delegatee_did)
 
         return DelegationResponse(
             request_id=request.id,
@@ -108,24 +133,35 @@ class DelegationManager:
         Returns:
             True if allowed, False if denied
         """
+        trace_id = get_trace_id()
         policy = self.policy
         
         # Check max depth
         if task.depth > policy.max_depth:
+            log_policy_check(logger, "max_depth", False, trace_id, 
+                           task_id=task.task_id, depth=task.depth, max_depth=policy.max_depth)
             return False
         
         # Check allowed capabilities
         if policy.allowed_capabilities and task.capability not in policy.allowed_capabilities:
+            log_policy_check(logger, "allowed_capabilities", False, trace_id,
+                           task_id=task.task_id, capability=task.capability, 
+                           allowed=policy.allowed_capabilities)
             return False
         
         # Check blocked capabilities
         if task.capability in policy.blocked_capabilities:
+            log_policy_check(logger, "blocked_capabilities", False, trace_id,
+                           task_id=task.task_id, capability=task.capability)
             return False
         
         # Check trust score if trust calculator is available
         if self.trust_calculator and policy.min_trust_score > 0:
             score = self.trust_calculator.calculate(task.delegatee_did, store=self.trust_store)
             if score.overall_score < policy.min_trust_score:
+                log_policy_check(logger, "min_trust_score", False, trace_id,
+                               task_id=task.task_id, delegatee_did=task.delegatee_did,
+                               score=score.overall_score, min_score=policy.min_trust_score)
                 return False
         
         # Check budget
@@ -134,8 +170,12 @@ class DelegationManager:
             spent = self._budget_spent.get(delegator, 0.0)
             estimated_cost = getattr(task, 'estimated_cost', 0.0)
             if spent + estimated_cost > policy.max_budget:
+                log_policy_check(logger, "max_budget", False, trace_id,
+                               task_id=task.task_id, delegator_did=delegator,
+                               spent=spent, estimated=estimated_cost, max_budget=policy.max_budget)
                 return False
         
+        log_policy_check(logger, "all_checks", True, trace_id, task_id=task.task_id)
         return True
 
     async def execute_task(self, task_id: str) -> DelegationResult:
@@ -145,6 +185,9 @@ class DelegationManager:
         Returns:
             DelegationResult with output data and status
         """
+        trace_id = get_trace_id()
+        start_time = time.time()
+        
         task = self.tasks.get(task_id)
         if not task:
             raise ValueError(f"Task {task_id} not found")
@@ -152,11 +195,12 @@ class DelegationManager:
         task.status = DelegationStatus.IN_PROGRESS
         task.started_at = datetime.now(timezone.utc)
 
+        log_request(logger, "EXECUTE_TASK", task.capability, trace_id,
+                   task_id=task_id, delegator_did=task.delegator_did, delegatee_did=task.delegatee_did)
+
         # Simulate execution (in real implementation, would call the delegatee agent)
-        import time
-        start = time.time()
         output_data = {"result": "success", "capability": task.capability, "input": task.input_data}
-        elapsed_ms = (time.time() - start) * 1000
+        elapsed_ms = (time.time() - start_time) * 1000
 
         task.status = DelegationStatus.COMPLETED
         task.completed_at = datetime.now(timezone.utc)
@@ -176,6 +220,13 @@ class DelegationManager:
             )
             self.trust_store.add_event(event)
 
+        # Record delegation metric
+        record_delegation("delegation_manager", "success")
+
+        duration_ms = (time.time() - start_time) * 1000
+        log_response(logger, "EXECUTE_TASK", task.capability, 200, duration_ms, trace_id,
+                    task_id=task_id, status="completed")
+
         return DelegationResult(
             task_id=task_id,
             status=DelegationStatus.COMPLETED,
@@ -185,6 +236,7 @@ class DelegationManager:
 
     async def get_task_status(self, task_id: str) -> Optional[DelegationStatus]:
         """Get the status of a task."""
+        trace_id = get_trace_id()
         task = self.tasks.get(task_id)
         if not task:
             return None
@@ -192,6 +244,7 @@ class DelegationManager:
 
     async def cancel_task(self, task_id: str) -> bool:
         """Cancel a task."""
+        trace_id = get_trace_id()
         task = self.tasks.get(task_id)
         if not task:
             return False
@@ -213,10 +266,17 @@ class DelegationManager:
             )
             self.trust_store.add_event(event)
 
+        # Record delegation metric
+        record_delegation("delegation_manager", "cancelled")
+
+        log_delegation(logger, task.delegator_did, task.delegatee_did, task_id, trace_id,
+                      capability=task.capability, status="cancelled")
+        
         return True
 
     async def record_task_failure(self, task_id: str, error: str, timeout: bool = False) -> bool:
         """Record a task failure for trust tracking."""
+        trace_id = get_trace_id()
         task = self.tasks.get(task_id)
         if not task:
             return False
@@ -239,6 +299,12 @@ class DelegationManager:
             )
             self.trust_store.add_event(event)
 
+        # Record delegation metric
+        record_delegation("delegation_manager", "timeout" if timeout else "failure")
+
+        log_delegation(logger, task.delegator_did, task.delegatee_did, task_id, trace_id,
+                      capability=task.capability, status="timeout" if timeout else "failure", error=error)
+        
         return True
 
     async def create_chain(
