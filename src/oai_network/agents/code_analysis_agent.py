@@ -15,7 +15,7 @@ from pydantic import BaseModel
 import uvicorn
 
 from oai_network.core.identity.generator import IdentityGenerator
-from oai_network.core.identity.models import IdentityDocument, KeyType
+from oai_network.core.identity.models import IdentityDocument, KeyType, AgentIdentity
 from oai_network.core.capabilities.models import AgentManifest, Capability, ServiceEndpoint, CapabilityPricing
 from oai_network.sdk.python.client import OAIClient
 
@@ -409,3 +409,8 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+async def create_code_analysis_agent(identity: Optional[AgentIdentity] = None) -> CodeAnalysisAgent:
+    """Factory function to create a CodeAnalysisAgent."""
+    return CodeAnalysisAgent(identity=identity)
