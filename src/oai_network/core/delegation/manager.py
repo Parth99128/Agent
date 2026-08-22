@@ -31,13 +31,16 @@ class DelegationManager:
         negotiation_protocol=None,
         policy: Optional[DelegationPolicy] = None,
         trust_store=None,
+        trust_calculator=None,
     ):
         self.discovery = discovery_service
         self.negotiation = negotiation_protocol
         self.policy = policy or DelegationPolicy()
         self.trust_store = trust_store
+        self.trust_calculator = trust_calculator
         self.tasks: dict[str, DelegationTask] = {}
         self.chains: dict[str, DelegationChain] = {}
+        self._budget_spent: dict[str, float] = {}
 
     async def delegate(self, request: DelegationRequest) -> DelegationResponse:
         """
@@ -97,6 +100,43 @@ class DelegationManager:
             return None
 
         return results[0].agent_did
+
+    def _check_policy(self, task: DelegationTask) -> bool:
+        """
+        Check if a delegation task complies with the policy.
+        
+        Returns:
+            True if allowed, False if denied
+        """
+        policy = self.policy
+        
+        # Check max depth
+        if task.depth > policy.max_depth:
+            return False
+        
+        # Check allowed capabilities
+        if policy.allowed_capabilities and task.capability not in policy.allowed_capabilities:
+            return False
+        
+        # Check blocked capabilities
+        if task.capability in policy.blocked_capabilities:
+            return False
+        
+        # Check trust score if trust calculator is available
+        if self.trust_calculator and policy.min_trust_score > 0:
+            score = self.trust_calculator.calculate(task.delegatee_did, store=self.trust_store)
+            if score.overall_score < policy.min_trust_score:
+                return False
+        
+        # Check budget
+        if policy.max_budget is not None:
+            delegator = task.delegator_did
+            spent = self._budget_spent.get(delegator, 0.0)
+            estimated_cost = getattr(task, 'estimated_cost', 0.0)
+            if spent + estimated_cost > policy.max_budget:
+                return False
+        
+        return True
 
     async def execute_task(self, task_id: str) -> DelegationResult:
         """

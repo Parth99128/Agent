@@ -100,7 +100,7 @@ class GatewayRouter:
                 return result  # Middleware returned a response
         
         # Enforce policy
-        if route.policy_enabled and self.policy_engine:
+        if route.policy_enabled and self.policy_engine and self.policy_engine.policy:
             policy_decision = self._enforce_policy(request, route)
             if not policy_decision.allowed:
                 return GatewayResponse(
@@ -142,10 +142,12 @@ class GatewayRouter:
     def _enforce_policy(self, request: GatewayRequest, route: RouteRule):
         """Enforce policy for a request."""
         # Build context from request
+        capability = request.capability_name or route.required_capability
         context = {
             'agent_did': request.agent_did,
             'requester_did': request.requester_did,
-            'capability_name': request.capability_name or route.required_capability,
+            'capability': capability,
+            'capability_name': capability,
             'delegation_depth': request.delegation_depth,
             'is_delegation': request.is_delegation,
             'client_ip': request.client_ip,
@@ -153,13 +155,17 @@ class GatewayRouter:
             'method': request.method,
         }
         
+        # Extract cost from request body if present
+        if request.body and isinstance(request.body, dict):
+            context['cost'] = request.body.get('cost', 0.0)
+        
         # Add route-specific requirements
         if route.required_trust_score > 0:
             context['min_trust_score'] = route.required_trust_score
         if route.require_verified:
             context['require_verified'] = True
         
-        return self.policy_engine.evaluate(context)
+        return self.policy_engine.evaluate(self.policy_engine.policy, context)
     
     def _select_upstream(self, route: RouteRule) -> Optional[UpstreamService]:
         """Select an upstream service using load balancing."""

@@ -173,3 +173,48 @@ class IdentityGenerator:
             key_type=self.key_type,
             timestamp=datetime.now(timezone.utc)
         )
+    
+    def sign_message(self, message: bytes, private_key_pem: str) -> bytes:
+        """
+        Sign an arbitrary message with the given private key.
+        
+        Args:
+            message: Message to sign
+            private_key_pem: Private key in PEM format
+            
+        Returns:
+            Signature bytes
+        """
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import padding
+        from cryptography.hazmat.primitives.serialization import load_pem_private_key
+        
+        private_key = load_pem_private_key(private_key_pem.encode('utf-8'), password=None)
+        
+        if self.key_type == KeyType.ED25519:
+            return private_key.sign(message)
+        else:  # RSA
+            return private_key.sign(
+                message,
+                padding.PSS(
+                    mgf=padding.MGF1(hashes.SHA256()),
+                    salt_length=padding.PSS.MAX_LENGTH
+                ),
+                hashes.SHA256()
+            )
+    
+    def generate(self, name: str, key_type: KeyType = KeyType.ED25519) -> tuple[AgentIdentity, str]:
+        """
+        Generate a new agent identity with key pair.
+        
+        Args:
+            name: Agent name (added to metadata)
+            key_type: Key type to use
+            
+        Returns:
+            Tuple of (AgentIdentity, private_key_pem)
+        """
+        self.key_type = key_type
+        meta = {"name": name}
+        identity, private_key_pem = self.create_identity(meta)
+        return identity, private_key_pem

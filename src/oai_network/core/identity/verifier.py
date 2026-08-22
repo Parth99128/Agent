@@ -55,6 +55,16 @@ class IdentityVerifier:
         
         return len(errors) == 0, errors
     
+    def verify_identity_structure(self, identity: AgentIdentity) -> bool:
+        """
+        Verify an agent identity's structure.
+        
+        Returns:
+            True if valid, False otherwise
+        """
+        valid, _ = self.verify_identity(identity)
+        return valid
+    
     def verify_proof(self, proof: IdentityProof, identity: AgentIdentity) -> tuple[bool, list[str]]:
         """
         Verify a proof of possession against an identity.
@@ -145,3 +155,43 @@ class IdentityVerifier:
             info["key_size"] = public_key.key_size
         
         return info
+    
+    def verify_signature(self, message: bytes, signature: bytes, identity_did: str, public_key_pem: str = None, key_type: KeyType = KeyType.ED25519) -> bool:
+        """
+        Verify a signature against a message and identity.
+        
+        Args:
+            message: The message that was signed
+            signature: The signature bytes
+            identity_did: The DID of the identity (for logging/context)
+            public_key_pem: Optional public key PEM (if not provided, would need to look up from registry)
+            key_type: The key type
+            
+        Returns:
+            True if signature is valid, False otherwise
+        """
+        if public_key_pem is None:
+            # In a real implementation, would look up the public key from the registry
+            # For now, we can't verify without the public key
+            return False
+        
+        try:
+            public_key = self._load_public_key(public_key_pem, key_type)
+            
+            if key_type == KeyType.ED25519:
+                public_key.verify(signature, message)
+            else:  # RSA
+                public_key.verify(
+                    signature,
+                    message,
+                    padding.PSS(
+                        mgf=padding.MGF1(hashes.SHA256()),
+                        salt_length=padding.PSS.MAX_LENGTH
+                    ),
+                    hashes.SHA256()
+                )
+            return True
+        except InvalidSignature:
+            return False
+        except Exception:
+            return False

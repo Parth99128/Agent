@@ -435,20 +435,30 @@ class RequestSizeMiddleware(GatewayMiddleware):
             self.config = None
             self.max_size = max_size_bytes or 10 * 1024 * 1024
     
+    def _calculate_request_size(self, request: GatewayRequest) -> int:
+        """Calculate total request size including headers and body."""
+        import sys
+        size = 0
+        # Headers
+        for key, value in request.headers.items():
+            size += sys.getsizeof(key) + sys.getsizeof(value)
+        # Body
+        if request.body:
+            size += sys.getsizeof(str(request.body))
+        # Path and method
+        size += sys.getsizeof(request.path) + sys.getsizeof(request.method)
+        return size
+    
     def process_request(self, request: GatewayRequest, route) -> Optional[GatewayResponse]:
         """Check request size."""
-        # In real implementation, would check Content-Length header or stream size
-        # For now, just check if body is too large (rough estimate)
-        if request.body:
-            import sys
-            size = sys.getsizeof(str(request.body))
-            if size > self.max_size:
-                max_mb = self.config.max_request_size_mb if self.config else self.max_size // (1024*1024)
-                return GatewayResponse(
-                    request_id=request.id,
-                    status_code=413,
-                    body={"error": "Request too large", "max_size_mb": max_mb},
-                )
+        size = self._calculate_request_size(request)
+        if size > self.max_size:
+            max_mb = self.max_size // (1024*1024)
+            return GatewayResponse(
+                request_id=request.id,
+                status_code=413,
+                body={"error": "Request too large", "max_size_mb": max_mb},
+            )
         return None
 
 

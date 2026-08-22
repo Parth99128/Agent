@@ -29,12 +29,14 @@ class AgentIdentity(BaseModel):
     - Public key for verification
     - Key type
     - Creation timestamp
+    - Optional expiration timestamp
     - Optional metadata
     """
     did: str = Field(..., description="Decentralized identifier for the agent")
     public_key: str = Field(..., description="Public key in PEM or multicodec format")
     key_type: KeyType = Field(..., description="Type of cryptographic key")
-    created_at: datetime = Field(default_factory=datetime.utcnow, description="When this identity was created")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="When this identity was created")
+    expires_at: Optional[datetime] = Field(None, description="When this identity expires")
     metadata: dict = Field(default_factory=dict, description="Additional metadata about the agent")
     
     @field_validator('did')
@@ -48,6 +50,16 @@ class AgentIdentity(BaseModel):
         """Generate a short fingerprint of the public key."""
         key_bytes = self.public_key.encode('utf-8')
         return hashlib.sha256(key_bytes).hexdigest()[:16]
+    
+    def sign(self, message: bytes) -> bytes:
+        """
+        Sign a message with the private key.
+        
+        Note: This requires the private key to be available.
+        In practice, the private key would be stored separately and
+        this method would be on a class that has access to it.
+        """
+        raise NotImplementedError("Signing requires private key. Use IdentityGenerator or a signer class.")
     
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""

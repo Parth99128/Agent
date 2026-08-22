@@ -78,6 +78,8 @@ class DelegationTask(BaseModel):
     progress: float = Field(default=0.0, ge=0.0, le=1.0, description="Progress 0-1")
     intermediate_results: list[dict[str, Any]] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    depth: int = Field(default=0, description="Delegation depth in chain")
+    estimated_cost: float = Field(default=0.0, description="Estimated cost for budget tracking")
 
     def is_terminal(self) -> bool:
         """Check if task is in a terminal state."""
@@ -139,6 +141,8 @@ class DelegationPolicy(BaseModel):
     min_trust_score: float = Field(default=0.5, ge=0.0, le=1.0, description="Minimum trust score")
     max_cost_per_delegation: Optional[float] = Field(None, description="Maximum cost per delegation")
     max_total_cost: Optional[float] = Field(None, description="Maximum total cost for chain")
+    max_budget: Optional[float] = Field(None, description="Maximum budget for delegator")
+    budget_period: str = Field(default="daily", description="Budget period (daily, weekly, monthly)")
     allowed_capabilities: list[str] = Field(default_factory=list, description="Allowed capability names")
     blocked_capabilities: list[str] = Field(default_factory=list, description="Blocked capability names")
     require_approval_above_cost: Optional[float] = Field(None, description="Require approval above cost")

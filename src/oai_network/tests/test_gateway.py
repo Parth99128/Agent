@@ -505,7 +505,7 @@ class TestMiddleware:
     
     def test_request_size_middleware(self):
         """Test request size limiting middleware."""
-        middleware = RequestSizeMiddleware(max_size_bytes=100)
+        middleware = RequestSizeMiddleware(max_size_bytes=1000)
         
         # Small request
         small_request = GatewayRequest(
@@ -523,7 +523,7 @@ class TestMiddleware:
             method="POST",
             path="/api/test",
             headers={},
-            body={"large": "x" * 200}
+            body={"large": "x" * 2000}
         )
         
         response = middleware.process_request(large_request, None)
