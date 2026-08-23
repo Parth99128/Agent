@@ -166,9 +166,11 @@ class CodeAnalysisAgent:
             from mcp import ClientSession
             
             # Create a fresh connection for each request
+            import os
             params_mcp = StdioServerParameters(
                 command=sys.executable, 
-                args=['-m', 'src.oai_network.agents.code_analysis_mcp_server']
+                args=['-m', 'src.oai_network.agents.code_analysis_mcp_server'],
+                cwd=os.getcwd()
             )
             
             async with stdio_client(params_mcp) as (read, write):

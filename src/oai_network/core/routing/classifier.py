@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 import ollama
 
-from ..observability import get_logger, log_request, log_response, log_error
+from ..observability import get_logger, log_request, log_response, log_error, get_trace_id
 
 logger = get_logger(__name__)
 

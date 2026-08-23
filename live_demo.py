@@ -100,51 +100,35 @@ class LiveDemo:
                 8080
             )
             
-            # 3. Register Code Analysis Agent via CLI
-            print("\n📝 Registering Code Analysis Agent via CLI...")
-            # First generate identity
-            print("   Generating identity...")
-            result = subprocess.run([
-                sys.executable, "-m", "oai_network.cli.main",
-                "identity", "generate",
-                "--name", "Code Analysis Agent",
-                "--output", "demo_identity.json"
-            ], capture_output=True, text=True, cwd=self.base_dir)
+            # 3. Start Code Analysis Agent (it will register itself)
+            print("\n🤖 Starting Code Analysis Agent (will auto-register)...")
+            self.start_process(
+                "Code Analysis Agent",
+                [sys.executable, "-m", "oai_network.agents.code_analysis_agent"],
+                8003
+            )
             
-            if result.returncode != 0:
-                print(f"⚠️  Identity generation failed: {result.stderr}")
-            else:
-                print(f"   Identity generated: {result.stdout.strip()}")
-            
-            # Register agent using the identity file
-            result = subprocess.run([
-                sys.executable, "-m", "oai_network.cli.main",
-                "agent", "register",
-                "--identity", "demo_identity.json",
-                "--registry", "http://localhost:8081"
-            ], capture_output=True, text=True, cwd=self.base_dir)
-            
-            print(f"   Result: {result.stdout.strip() or result.stderr.strip()}")
+            # Give it a moment to register
+            await asyncio.sleep(3)
             
             # 4. Discover agents via REST API
-            print("\n🔍 Discovering agents via REST API (GET /discover)...")
+            print("\n🔍 Discovering agents via REST API (POST /discover)...")
             async with httpx.AsyncClient() as client:
                 resp = await client.post(
                     "http://localhost:8081/discover",
-                    json={"capability_type": "security", "limit": 10}
+                    json={"capability": "code_analysis", "max_results": 10}
                 )
                 agents = resp.json()
                 print(f"   Found {len(agents.get('agents', []))} agent(s):")
                 for agent in agents.get('agents', []):
-                    print(f"      - {agent['name']} (DID: {agent['did'][:20]}...)")
-                    print(f"        Capabilities: {[c['name'] for c in agent.get('capabilities', [])]}")
+                    print(f"      - {agent['agent_name']} (DID: {agent['agent_did'][:20]}...)")
+                    print(f"        Capabilities: {agent.get('capabilities', [])}")
                     print(f"        Trust Score: {agent.get('trust_score', 'N/A')}")
             
             # 5. Test A2A Communication directly with Code Analysis Agent
             print("\n🤖 Testing A2A Communication with Code Analysis Agent...")
             
-            # First, let's check if the agent is running on port 8003
-            # If not, we'll start it
+            # Agent is already running from step 3, just verify it's healthy
             try:
                 async with httpx.AsyncClient() as client:
                     resp = await client.get("http://localhost:8003/health", timeout=2.0)
@@ -168,7 +152,7 @@ class LiveDemo:
                     "id": "demo-1",
                     "method": "analyze",
                     "params": {
-                        "path": "/app/src/oai_network",
+                        "path": "src/oai_network",
                         "tools": ["bandit", "pylint"]
                     }
                 }
@@ -266,11 +250,21 @@ class LiveDemo:
             # 9. Test CLI Commands
             print("\n💻 Testing CLI Commands...")
             
+            # Get the registered DID from the identity file
+            import json
+            # Use the identity file created by the agent
+            identity_file = self.base_dir / "code_analysis_identity.json"
+            if not identity_file.exists():
+                identity_file = self.base_dir / "demo_identity.json"
+            with open(identity_file, 'r') as f:
+                identity_data = json.load(f)
+            registered_did = identity_data['identity']['did']
+            
             cli_tests = [
                 (["oai", "--help"], "Help"),
                 (["oai", "discover", "find", "--query", "analyze python code", "--registry", "http://localhost:8081"], "Semantic Discovery"),
                 (["oai", "health", "--registry", "http://localhost:8081", "--gateway", "http://localhost:8080"], "Health Check"),
-                (["oai", "trust", "score", "--did", "did:key:z6Mk...", "--registry", "http://localhost:8081"], "Trust Score"),
+                (["oai", "trust", "score", "--did", registered_did, "--registry", "http://localhost:8081"], "Trust Score"),
             ]
             
             for cmd, desc in cli_tests:

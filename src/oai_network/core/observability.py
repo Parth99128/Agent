@@ -14,7 +14,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
-from prometheus_client import Counter, Gauge, Histogram, generate_latest
+from prometheus_client import Counter, Gauge, Histogram, generate_latest, REGISTRY
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -148,51 +148,71 @@ def get_logger(name: str) -> logging.Logger:
     return logger
 
 
-# Prometheus Metrics
-REQUEST_COUNT = Counter(
+# Prometheus Metrics - use try/except to handle duplicate registration across modules
+def _create_metric(metric_class, name, *args, **kwargs):
+    """Create a metric, handling duplicate registration."""
+    try:
+        return metric_class(name, *args, **kwargs)
+    except ValueError as e:
+        if "Duplicated timeseries" in str(e):
+            # Metric already exists, get it from registry
+            for collector in REGISTRY._collector_to_names:
+                if name in REGISTRY._collector_to_names[collector]:
+                    return collector
+        raise
+
+REQUEST_COUNT = _create_metric(
+    Counter,
     "oai_requests_total",
     "Total number of requests",
     ["service", "method", "endpoint", "status"]
 )
 
-REQUEST_LATENCY = Histogram(
+REQUEST_LATENCY = _create_metric(
+    Histogram,
     "oai_request_duration_seconds",
     "Request latency in seconds",
     ["service", "method", "endpoint"],
     buckets=[0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
 )
 
-ACTIVE_REQUESTS = Gauge(
+ACTIVE_REQUESTS = _create_metric(
+    Gauge,
     "oai_active_requests",
     "Number of active requests",
     ["service"]
 )
 
-POLICY_DENIALS = Counter(
+POLICY_DENIALS = _create_metric(
+    Counter,
     "oai_policy_denials_total",
     "Total number of policy denials",
     ["service", "reason"]
 )
 
-AGENT_SUCCESS_RATE = Gauge(
+AGENT_SUCCESS_RATE = _create_metric(
+    Gauge,
     "oai_agent_success_rate",
     "Agent success rate",
     ["agent_did"]
 )
 
-AGENT_DISCOVERY_COUNT = Counter(
+AGENT_DISCOVERY_COUNT = _create_metric(
+    Counter,
     "oai_agent_discovery_total",
     "Total number of agent discoveries",
     ["service", "capability_type"]
 )
 
-DELEGATION_COUNT = Counter(
+DELEGATION_COUNT = _create_metric(
+    Counter,
     "oai_delegations_total",
     "Total number of delegations",
     ["service", "status"]
 )
 
-TRUST_SCORE = Gauge(
+TRUST_SCORE = _create_metric(
+    Gauge,
     "oai_agent_trust_score",
     "Agent trust score",
     ["agent_did"]

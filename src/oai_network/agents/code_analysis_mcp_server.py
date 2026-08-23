@@ -125,9 +125,26 @@ def run_bandit(path: str, include_patterns: List[str] = None, exclude_patterns: 
         return {"error": str(e), "results": [], "metrics": {}}
 
 
-def run_pylint(path: str, include_patterns: List[str] = None) -> Dict[str, Any]:
+def run_pylint(path: str, include_patterns: List[str] = None, exclude_patterns: List[str] = None) -> Dict[str, Any]:
     """Run Pylint code quality analysis on a path."""
-    cmd = ["pylint", path, "--output-format=json", "--reports=y"]
+    # Use pyproject.toml config for ignore patterns
+    import os
+    config_path = os.path.join(os.getcwd(), "pyproject.toml")
+    if os.path.exists(config_path):
+        cmd = ["pylint", path, "--output-format=json", "--reports=y", "--rcfile", config_path]
+    else:
+        cmd = ["pylint", path, "--output-format=json", "--reports=y"]
+    
+    if exclude_patterns:
+        for pattern in exclude_patterns:
+            # Pylint uses --ignore for directories and --ignore-patterns for file patterns
+            if pattern.endswith("/*"):
+                # Directory pattern like "*/__pycache__/*" -> --ignore=__pycache__
+                dir_name = pattern.replace("*/", "").replace("/*", "")
+                cmd.extend(["--ignore", dir_name])
+            else:
+                # File pattern
+                cmd.extend(["--ignore-patterns", pattern])
     
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -239,7 +256,7 @@ async def handle_call_tool(ctx, params: CallToolRequestParams) -> CallToolResult
         security_issues = format_bandit_results(bandit_output)
         
         # Run Pylint for quality analysis
-        pylint_output = run_pylint(path, include_patterns)
+        pylint_output = run_pylint(path, include_patterns, exclude_patterns)
         quality_issues = format_pylint_results(pylint_output)
         
         # Calculate metrics
@@ -282,12 +299,15 @@ async def handle_call_tool(ctx, params: CallToolRequestParams) -> CallToolResult
                 content=[TextContent(type="text", text=f"Error: File '{file_path}' is not a Python file")]
             )
         
+        # Default exclude patterns for single file analysis
+        exclude_patterns = ["*/__pycache__/*", "*/.git/*", "*/venv/*", "*/.venv/*"]
+        
         # Run Bandit on single file
         bandit_output = run_bandit(file_path)
         security_issues = format_bandit_results(bandit_output)
         
         # Run Pylint on single file
-        pylint_output = run_pylint(file_path)
+        pylint_output = run_pylint(file_path, exclude_patterns=exclude_patterns)
         quality_issues = format_pylint_results(pylint_output)
         
         metrics = calculate_metrics(security_issues, quality_issues)

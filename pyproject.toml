@@ -98,7 +98,20 @@ select = ["E", "F", "I", "N", "W", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-asyncio_mode = "auto"
+
+[tool.pylint.main]
+ignore = ["__pycache__", ".git", "venv", ".venv"]
+ignore-patterns = ["^\\.#"]
+ignore-paths = [
+    ".*/__pycache__/.*",
+    ".*/.git/.*",
+    ".*/venv/.*",
+    ".*/.venv/.*",
+    ".*/site-packages/.*",
+    ".*/dist-packages/.*",
+    ".*/examples/.*",
+]
+
 
 [tool.coverage.run]
 source = ["src/oai_network"]

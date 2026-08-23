@@ -200,6 +200,33 @@ async def get_trust_history(
     }
 
 
+@app.get("/trust/{agent_did}")
+async def get_trust_score(
+    request: Request,
+    agent_did: str,
+    registry: RegistryService = Depends(get_registry),
+):
+    """Get trust score for an agent."""
+    trace_id = getattr(request.state, "trace_id", "no-trace")
+    log_request(logger, "GET", f"/trust/{agent_did}", trace_id, agent_did=agent_did)
+    
+    entry = await registry.get_agent(agent_did)
+    if not entry:
+        log_error(logger, "Agent not found", trace_id, agent_did=agent_did)
+        raise HTTPException(status_code=404, detail="Agent not found")
+    
+    # Get trust score from trust store
+    from ..core.trust.store import TrustStore
+    from ..core.trust.calculator import TrustCalculator
+    trust_store = TrustStore()
+    calculator = TrustCalculator(store=trust_store)
+    
+    # Calculate trust score - returns default score (0.5) for new agents with no history
+    score = calculator.calculate(agent_did, store=trust_store)
+    
+    return score.model_dump(mode='json')
+
+
 @app.post("/discover", response_model=DiscoveryResponse)
 async def discover_agents(
     request: Request,

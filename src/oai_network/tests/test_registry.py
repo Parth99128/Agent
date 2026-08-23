@@ -388,3 +388,58 @@ class TestRegistryService:
         assert stats["healthy_agents"] == 1
         assert stats["degraded_agents"] == 0
         assert stats["unhealthy_agents"] == 0
+
+    @pytest.mark.asyncio
+    async def test_registration_discovery_consistency(self, registry_service, sample_manifest):
+        """Test that an agent is immediately discoverable after registration.
+        
+        This test ensures the registration→discovery path is consistent and
+        doesn't have timing issues where a newly registered agent isn't found.
+        """
+        # Register agent
+        response = await registry_service.register_agent(sample_manifest)
+        assert response.success is True
+        agent_did = response.agent_did
+        
+        # Immediately discover - should find the agent
+        results = await registry_service.discover_agents(
+            capability="text_summarization",
+            max_results=10
+        )
+        
+        assert len(results) == 1
+        assert results[0].agent_did == agent_did
+        assert results[0].agent_name == sample_manifest.name
+        assert results[0].capability_name == "text_summarization"
+        assert results[0].trust_score >= 0.0
+        assert results[0].verified is True
+        
+        # Also test with natural language query
+        results_nl = await registry_service.discover_agents(
+            nl_query="summarize text",
+            max_results=10
+        )
+        
+        assert len(results_nl) == 1
+        assert results_nl[0].agent_did == agent_did
+        
+        # Test with trust score filter
+        results_trust = await registry_service.discover_agents(
+            capability="text_summarization",
+            min_trust_score=0.0,
+            max_results=10
+        )
+        
+        assert len(results_trust) == 1
+        assert results_trust[0].agent_did == agent_did
+        
+        # Test with verified_only filter
+        results_verified = await registry_service.discover_agents(
+            capability="text_summarization",
+            verified_only=True,
+            max_results=10
+        )
+        
+        assert len(results_verified) == 1
+        assert results_verified[0].agent_did == agent_did
+        assert results_verified[0].verified is True

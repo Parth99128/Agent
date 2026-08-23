@@ -1,23 +1,23 @@
 {
   "identity": {
-    "did": "did:oai:e68f1d7b8b49308167910f9c33793dad",
-    "public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAz3lEdo1OUagWIjfTpzO7aoPMNLVVN1Ynwi2LnPuCdGc=\n-----END PUBLIC KEY-----\n",
+    "did": "did:oai:cebe0838ec417d21543d4117b039f4a0",
+    "public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAhkMLsgzQzwpdIAJMnfRn3E17GhqCbbngo/AzI629F+s=\n-----END PUBLIC KEY-----\n",
     "key_type": "ed25519",
-    "created_at": "2026-08-22T11:02:05.283288Z",
+    "created_at": "2026-08-23T07:39:58.283294Z",
     "expires_at": null,
     "metadata": {
       "name": "Code Analysis Agent"
     }
   },
   "proof": {
-    "identity_did": "did:oai:e68f1d7b8b49308167910f9c33793dad",
-    "challenge": "e1113ed202f418a984173a1653eb9c18c9bccb951565f5d82e73082cd5addfd4",
-    "signature": "a2d3cc13c74cdfb02c039af7086af6e0b680c1331366c2e5fe30724fa0e3561d2f6b6af84751061b275156bc7a61b1045909e8d1691141af04cbe7beb95d720d",
+    "identity_did": "did:oai:cebe0838ec417d21543d4117b039f4a0",
+    "challenge": "c0e525090466676c38ce069107168c3df9dae7c2cf7a1b48892a3d618ae01170",
+    "signature": "927c11e31ab81bc40578beac3da811da2ea09b47186b26624bf40ea78c6f2b6ce9bdbd46abcb87b324791c4202116c72635b6a8a171f4456e580ff3698971708",
     "key_type": "ed25519",
-    "timestamp": "2026-08-22T11:02:05.283735Z",
+    "timestamp": "2026-08-23T07:39:58.283765Z",
     "expires_at": null
   },
   "verified": false,
   "verified_at": null,
-  "document_id": "doc-1787396525.283759"
+  "document_id": "doc-1787470798.283791"
 }

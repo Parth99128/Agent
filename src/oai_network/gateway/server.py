@@ -239,6 +239,26 @@ async def get_trust_history(
     }
 
 
+@app.get("/trust/{agent_did}")
+async def get_trust_score(
+    request: Request,
+    agent_did: str,
+):
+    """Get trust score for an agent."""
+    trace_id = getattr(request.state, "trace_id", "no-trace")
+    log_request(logger, "GET", f"/trust/{agent_did}", trace_id, agent_did=agent_did)
+    
+    from ..core.trust.store import TrustStore
+    from ..core.trust.calculator import TrustCalculator
+    trust_store = TrustStore()
+    calculator = TrustCalculator(store=trust_store)
+    
+    # Calculate trust score - returns default score (0.5) for new agents with no history
+    score = calculator.calculate(agent_did, store=trust_store)
+    
+    return score.model_dump(mode='json')
+
+
 def main():
     """Run the gateway server."""
     uvicorn.run(
