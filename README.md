@@ -125,7 +125,7 @@ The demo shows:
 
 ---
 
-## CLI Usage
+### CLI Usage
 
 ```bash
 # Create a new agent identity
